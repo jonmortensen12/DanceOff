@@ -1,0 +1,114 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Reference pass</title>
+<body>
+<script type="module">
+// Driven by tools/reference.mjs. Runs every frame of the clip (JPEGs under
+// /frames/) through the pose model, finds every person, and for each one
+// measures how much of their legs and forearms is Cosmo-coloured (tan fur)
+// versus Cougarette navy. Picking Cosmo out happens in reference.mjs.
+import { FilesetResolver, PoseLandmarker } from '/web/lib/mediapipe/vision_bundle.mjs';
+
+const canvas = document.createElement('canvas');
+const ctx = canvas.getContext('2d', { willReadFrequently: true });
+
+function tanAt(img, x, y) {
+  // fraction of tan pixels in a small square around (x, y), normalised coords
+  const r = Math.max(3, Math.round(img.width * 0.006));
+  const cx = Math.round(x * img.width), cy = Math.round(y * img.height);
+  if (cx < r || cy < r || cx >= img.width - r || cy >= img.height - r) return null;
+  const d = ctx.getImageData(cx - r, cy - r, 2 * r + 1, 2 * r + 1).data;
+  let tan = 0, n = 0;
+  for (let i = 0; i < d.length; i += 4) {
+    const R = d[i], G = d[i + 1], B = d[i + 2];
+    const mx = Math.max(R, G, B), mn = Math.min(R, G, B);
+    n++;
+    // warm, fairly light, not grey: Cosmo's fur. Blonde hair is excluded by
+    // only sampling limbs, never the head.
+    if (R >= G && G > B && mx > 110 && (mx - mn) > 35 && (R - B) > 40) tan++;
+  }
+  return tan / n;
+}
+
+// points along limbs: [a, b, t] = landmark a + t*(b-a)
+const SAMPLES = [
+  [25, 27, 0.5], [26, 28, 0.5], [23, 25, 0.5], [24, 26, 0.5],   // shins, thighs
+  [25, 25, 0], [26, 26, 0], [27, 27, 0], [28, 28, 0],           // knees, ankles
+  [13, 15, 0.5], [14, 16, 0.5],                                 // forearms
+];
+
+window.runAll = async function (count, fps, model) {
+  const vision = await FilesetResolver.forVisionTasks('/web/lib/mediapipe/wasm');
+  const pose = await PoseLandmarker.createFromOptions(vision, {
+    baseOptions: { modelAssetPath: model, delegate: 'CPU' },
+    runningMode: 'VIDEO', numPoses: 10,
+    minPoseDetectionConfidence: 0.3, minPosePresenceConfidence: 0.3, minTrackingConfidence: 0.3,
+  });
+  const out = [];
+  for (let i = 0; i < count; i++) {
+    const name = 'f' + String(i + 1).padStart(4, '0') + '.jpg';
+    const blob = await (await fetch('/frames/' + name)).blob();
+    const img = await createImageBitmap(blob);
+    canvas.width = img.width; canvas.height = img.height;
+    ctx.drawImage(img, 0, 0);
+    const res = pose.detectForVideo(img, Math.round(i * 1000 / fps));
+    const people = res.landmarks.map(lm => {
+      let tan = 0, n = 0;
+      for (const [a, b, t] of SAMPLES) {
+        if ((lm[a].visibility ?? 1) < 0.3) continue;
+        const v = tanAt(img, lm[a].x + t * (lm[b].x - lm[a].x), lm[a].y + t * (lm[b].y - lm[a].y));
+        if (v != null) { tan += v; n++; }
+      }
+      return {
+        lm: lm.map(p => [+p.x.toFixed(4), +p.y.toFixed(4), +(p.visibility ?? 0).toFixed(2)]),
+        tan: n ? +(tan / n).toFixed(3) : null, tanN: n,
+      };
+    });
+    out.push({ w: img.width, h: img.height, people });
+    img.close();
+    if (i % 100 === 0) console.log('frame', i, people.length, 'people');
+  }
+  return out;
+};
+// Pass 2: one square crop per frame around where Cosmo should be, each run
+// on its own (IMAGE mode). Cosmo fills the crop, so the detector cannot
+// miss him among twenty Cougarettes. Landmarks come back in full-frame
+// coordinates.
+window.runCrops = async function (jobs, model) {
+  const vision = await FilesetResolver.forVisionTasks('/web/lib/mediapipe/wasm');
+  const pose = await PoseLandmarker.createFromOptions(vision, {
+    baseOptions: { modelAssetPath: model, delegate: 'CPU' },
+    runningMode: 'IMAGE', numPoses: 3,
+    minPoseDetectionConfidence: 0.3, minPosePresenceConfidence: 0.3,
+  });
+  const out = [];
+  for (const job of jobs) {
+    const name = 'f' + String(job.i + 1).padStart(4, '0') + '.jpg';
+    const img = await createImageBitmap(await (await fetch('/frames/' + name)).blob());
+    const side = Math.round(job.side), x0 = Math.round(job.cx - side / 2), y0 = Math.round(job.cy - side / 2);
+    canvas.width = side; canvas.height = side;
+    ctx.fillStyle = '#000'; ctx.fillRect(0, 0, side, side);
+    ctx.drawImage(img, -x0, -y0);
+    const res = pose.detect(canvas);
+    const people = res.landmarks.map(lm => {
+      let tan = 0, n = 0;
+      const fake = { width: side, height: side };
+      for (const [a, b, t] of SAMPLES) {
+        if ((lm[a].visibility ?? 1) < 0.3) continue;
+        const v = tanAt(fake, lm[a].x + t * (lm[b].x - lm[a].x), lm[a].y + t * (lm[b].y - lm[a].y));
+        if (v != null) { tan += v; n++; }
+      }
+      const cx = (lm[11].x + lm[12].x + lm[23].x + lm[24].x) / 4, cy = (lm[11].y + lm[12].y + lm[23].y + lm[24].y) / 4;
+      return {
+        lm: lm.map(p => [+((x0 + p.x * side) / img.width).toFixed(4), +((y0 + p.y * side) / img.height).toFixed(4), +(p.visibility ?? 0).toFixed(2)]),
+        tan: n ? +(tan / n).toFixed(3) : null, off: +Math.hypot(cx - 0.5, cy - 0.5).toFixed(3),
+      };
+    });
+    out.push({ i: job.i, people });
+    img.close();
+    if (job.i % 100 === 0) console.log('crop', job.i, people.length, 'people');
+  }
+  return out;
+};
+window.ready = true;
+</script>

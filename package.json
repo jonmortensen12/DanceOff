@@ -1,0 +1,6 @@
+{
+  "name": "danceoff",
+  "private": true,
+  "type": "module",
+  "description": "Checks and tools only. The game itself is web/, served as plain files."
+}

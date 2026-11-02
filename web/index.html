@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#002e5d">
+<title>Cosmo Dance-Off</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23002e5d'/%3E%3Ctext x='32' y='44' font-size='30' font-weight='900' text-anchor='middle' fill='white' font-family='Arial'%3E00%3C/text%3E%3C/svg%3E">
+<style>
+  :root {
+    --navy: #002e5d; --royal: #0062b8; --tan: #c8a273; --white: #fff;
+    --perfect: #ffd54a; --good: #6ee7b7; --ok: #93c5fd; --miss: #94a3b8;
+    --p1: #3b9cff; --p2: #ffb020; --p3: #34d399; --p4: #ff5c8a;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; height: 100%; overflow: hidden; }
+  body {
+    background: radial-gradient(ellipse at 50% 120%, #0a4d8c 0%, var(--navy) 55%, #001730 100%);
+    color: var(--white); font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
+    touch-action: manipulation; user-select: none; -webkit-user-select: none;
+  }
+  .display { font-weight: 900; letter-spacing: .02em; text-transform: uppercase; font-stretch: condensed; }
+  button {
+    font: inherit; font-weight: 800; text-transform: uppercase; letter-spacing: .04em;
+    border: 0; border-radius: 999px; padding: 14px 28px; font-size: 18px; cursor: pointer;
+    background: var(--white); color: var(--navy); box-shadow: 0 4px 0 #9db7d3;
+  }
+  button:active { transform: translateY(2px); box-shadow: 0 2px 0 #9db7d3; }
+  button.ghost { background: transparent; color: var(--white); box-shadow: inset 0 0 0 2px #ffffff66; }
+  select { font: inherit; padding: 8px 10px; border-radius: 10px; border: 0; max-width: 100%; }
+
+  /* ---- the game layout ---- */
+  #game { position: absolute; inset: 0; display: grid; gap: 10px; padding: 10px;
+    padding: max(10px, env(safe-area-inset-top)) max(10px, env(safe-area-inset-right)) max(10px, env(safe-area-inset-bottom)) max(10px, env(safe-area-inset-left));
+    grid-template-columns: minmax(0, 1fr) minmax(220px, 34%); grid-template-rows: auto minmax(0, 1fr);
+    grid-template-areas: "song cam" "song cards"; }
+  @media (orientation: portrait) {
+    #game { grid-template-columns: 1fr; grid-template-rows: auto auto minmax(0, 1fr);
+      grid-template-areas: "song" "cam" "cards"; }
+  }
+  .panel { position: relative; border-radius: 16px; overflow: hidden; background: #000; }
+  #songBox { grid-area: song; display: flex; align-items: center; justify-content: center; background: transparent; }
+  #song { border-radius: 16px; }
+  #song { width: 100%; height: 100%; object-fit: contain; display: block; }
+  #camBox { grid-area: cam; aspect-ratio: 4 / 3; }
+  #camBox video, #camBox canvas { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+  #camBox video { transform: scaleX(-1); }   /* a mirror: what dancers expect */
+  #cards { grid-area: cards; display: grid; gap: 8px; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+    align-content: start; overflow: auto; }
+  .card { border-radius: 14px; padding: 10px 12px; background: #ffffff14; border-left: 6px solid var(--c);
+    display: grid; grid-template-columns: 1fr auto; align-items: center; row-gap: 2px; }
+  .card .who { font-weight: 900; font-size: 15px; color: var(--c); }
+  .card .pct { font-weight: 900; font-size: 26px; text-align: right; grid-row: span 2; }
+  .card .last { font-weight: 900; font-size: 13px; letter-spacing: .06em; height: 16px; }
+  .card.gone { opacity: .45; }
+  .card .bar { grid-column: span 2; height: 5px; border-radius: 3px; background: #ffffff1f; overflow: hidden; margin-top: 4px; }
+  .card .bar i { display: block; height: 100%; width: 0; background: var(--c); transition: width .3s; }
+
+  #banner { position: absolute; left: 0; right: 0; top: 50%; transform: translateY(-50%);
+    text-align: center; pointer-events: none; text-shadow: 0 4px 24px #000c; }
+  #banner .big { font-size: clamp(48px, 11vw, 150px); line-height: .9; }
+  #banner .small { font-size: clamp(16px, 2.6vw, 28px); font-weight: 800; margin-top: 8px; }
+  #progress { position: absolute; left: 0; bottom: 0; height: 5px; background: var(--tan); width: 0; }
+  #meter { position: absolute; right: 8px; bottom: 6px; font-size: 11px; opacity: .55; font-variant-numeric: tabular-nums; }
+
+  /* ---- screens over the game ---- */
+  .screen { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+    padding: 16px; background: #001730e6; backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); z-index: 5; overflow: auto; }
+  .screen[hidden] { display: none; }
+  .sheet { max-width: 720px; width: 100%; text-align: center; margin: auto; }
+  .sheet h1 { font-size: clamp(44px, 9vw, 96px); margin: 0; line-height: .9; }
+  .sheet h1 .num { color: var(--tan); }
+  .sheet p { font-size: 18px; line-height: 1.45; color: #d6e4f3; margin: 14px auto; max-width: 560px; }
+  .sheet .row { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; margin-top: 18px; }
+  .kicker { color: var(--tan); font-weight: 800; letter-spacing: .18em; text-transform: uppercase; font-size: 14px; }
+  #status { min-height: 24px; font-weight: 700; color: var(--perfect); }
+  .err { color: #ffb4b4 !important; }
+
+  /* the setup screen keeps the camera visible: it sits over the song only */
+  #setup { background: transparent; backdrop-filter: none; -webkit-backdrop-filter: none; pointer-events: none; align-items: flex-start; justify-content: flex-start; }
+  #setup .sheet { pointer-events: auto; background: #001730ee; border-radius: 20px; padding: 22px; margin: 0;
+    max-width: min(560px, 62%); text-align: left; }
+  /* on a phone held upright the camera is in the middle: keep the instructions below it */
+  @media (orientation: portrait) { #setup { align-items: flex-end; } #setup .sheet { max-width: 100%; padding: 16px; } #setup ol { font-size: 14px; } }
+  #setup ol { margin: 10px 0 0; padding-left: 22px; line-height: 1.6; color: #d6e4f3; }
+  #seen { font-size: 22px; font-weight: 900; margin-top: 12px; }
+
+  #results .sheet { max-width: 820px; }
+  .podium { display: grid; gap: 10px; margin-top: 18px; text-align: left; }
+  .podium .line { display: grid; grid-template-columns: 44px 1fr auto; gap: 12px; align-items: center;
+    background: #ffffff12; border-radius: 14px; padding: 12px 16px; border-left: 6px solid var(--c); }
+  .podium .rank { font-size: 28px; font-weight: 900; color: var(--tan); }
+  .podium .name { font-weight: 900; font-size: 20px; color: var(--c); }
+  .podium .ttl { font-weight: 700; color: #d6e4f3; font-size: 15px; }
+  .podium .counts { font-size: 13px; color: #b8c9dc; margin-top: 2px; }
+  .podium .pct { font-size: 34px; font-weight: 900; }
+  .podium .line.win { background: linear-gradient(90deg, #c8a27333, #ffffff12); }
+</style>
+</head>
+<body>
+<div id="game">
+  <div id="songBox" class="panel">
+    <video id="song" playsinline preload="auto">
+      <source src="media/rolex.mp4" type="video/mp4">
+      <source src="media/rolex.webm" type="video/webm">
+    </video>
+    <div id="banner"></div>
+    <div id="progress"></div>
+  </div>
+  <div id="camBox" class="panel">
+    <video id="cam" playsinline muted></video>
+    <canvas id="overlay"></canvas>
+    <div id="meter"></div>
+  </div>
+  <div id="cards"></div>
+</div>
+
+<section id="title" class="screen">
+  <div class="sheet">
+    <div class="kicker">Holy War Week · Game Day Party</div>
+    <h1 class="display">Cosmo<br>Dance-Off <span class="num">00</span></h1>
+    <p>Dance Cosmo's famous 2017 routine with the Cougarettes. The camera watches up to four dancers
+      and grades every move. Copy him straight on or like a mirror, both count.</p>
+    <div class="row"><button id="go">Let's dance</button></div>
+    <p id="status"></p>
+  </div>
+</section>
+
+<section id="setup" class="screen" hidden>
+  <div class="sheet">
+    <div class="kicker">Line up</div>
+    <ol>
+      <li>Stand back until the camera sees you <b>head to toe</b>.</li>
+      <li>Up to <b>4 dancers</b>, side by side, not in front of each other. Tape an X for each one.</li>
+      <li>Stay on your spot: that's how the camera knows who's who.</li>
+    </ol>
+    <div id="seen">Looking for dancers…</div>
+    <div class="row" style="justify-content:flex-start">
+      <button id="start">Start the song</button>
+      <select id="camPick" hidden></select>
+    </div>
+  </div>
+</section>
+
+<section id="results" class="screen" hidden>
+  <div class="sheet">
+    <div class="kicker">Final whistle</div>
+    <h1 class="display" id="winner">Winner</h1>
+    <div class="podium" id="podium"></div>
+    <div class="row"><button id="again">Dance again</button></div>
+    <p id="best"></p>
+  </div>
+</section>
+
+<script type="module" src="game.js"></script>
+</body>
+</html>

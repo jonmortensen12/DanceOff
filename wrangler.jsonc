@@ -1,0 +1,16 @@
+{
+  "name": "danceoff",
+  "compatibility_date": "2026-10-01",
+
+  // A URL on the workers.dev subdomain, said outright rather than left to a
+  // dashboard toggle (Dry Fly and Night Watch both hit "no URLs enabled").
+  "workers_dev": true,
+
+  // Only web/ is uploaded - the tools, the checks and the notes beside it
+  // stay in the repo and off the internet. No Worker code: every path is a
+  // plain file. Cloudflare's limit is 25 MiB per file; the biggest here is
+  // the song video (~17 MB) and the pose library's .wasm (~14 MB).
+  "assets": {
+    "directory": "web"
+  }
+}
