@@ -112,7 +112,7 @@ export function prepareRef(ref, song) {
 // for matching better than chance, so made-up moves score low everywhere.
 export const MAX_CHANCE = 0.88;
 const CHANCE_OFFSETS = [-12, -9, -6, -4, 4, 6, 9, 12];
-export function chance(R, w) {
+export function chance(R, w, T = TIMING) {
   const vals = [];
   for (const off of CHANCE_OFFSETS) {
     const samples = [];
@@ -121,7 +121,7 @@ export function chance(R, w) {
       if (i < 0 || i >= R.angs.length) i = ((i % R.angs.length) + R.angs.length) % R.angs.length;
       if (R.angs[i]) samples.push({ t, angs: R.angs[i], mir: R.mirs[i] });
     }
-    const f = samples.length >= 4 && fit(R, samples);
+    const f = samples.length >= 4 && fit(R, samples, T);
     if (f) vals.push(f.s);
   }
   if (!vals.length) return 0.5;
@@ -147,14 +147,18 @@ export function windows(R, end = R.length) {
 // letting every camera frame pick its own best moment of Cosmo's dance
 // made up moves score 95%.
 export const LATE = 0.5, EARLY = 0.25;
+// The timing allowance as an object, so the results screen can re-grade a
+// finished song with other values (the Ahead / Behind sliders).
+export const TIMING = { early: EARLY, late: LATE };
 
 // The best fit of a run of samples [{t, angs, mir}] to Cosmo: the mean
 // similarity at the best single delay and direction. Each sample is a
 // camera frame. The worst quarter of samples are dropped (a blurred frame,
 // a bad detection) before averaging.
-export function fit(R, samples) {
+export function fit(R, samples, T = TIMING) {
   let best = null;
-  for (let lagF = -Math.round(EARLY * R.fps); lagF <= Math.round(LATE * R.fps); lagF++) {
+  const lo = -Math.round(T.early * R.fps), hi = Math.round(T.late * R.fps);
+  for (let lagF = lo; lagF <= hi; lagF++) {
     for (const key of ['angs', 'mir']) {
       const sims = [];
       for (const x of samples) {
@@ -168,7 +172,9 @@ export function fit(R, samples) {
       sims.sort((p, q) => q - p);
       const keep = sims.slice(0, Math.max(2, Math.ceil(sims.length * 0.75)));
       const m = keep.reduce((p, q) => p + q, 0) / keep.length;
-      if (!best || m > best.s) best = { s: m, lag: lagF / R.fps, mirror: key === 'mir', n: sims.length };
+      // edge: the best delay is the most allowed, so a wider allowance might fit better
+      if (!best || m > best.s) best = { s: m, lag: lagF / R.fps, mirror: key === 'mir', n: sims.length,
+        edge: lagF === hi && hi > 0 ? 'late' : lagF === lo && lo < 0 ? 'early' : null };
     }
   }
   return best;
@@ -189,7 +195,7 @@ export const GRADES = [
 // window's chance level (0 = no better than random moves from the routine,
 // 1 = exactly Cosmo), then scaled down if the dancer barely moved while
 // Cosmo did.
-export function gradeWindow(R, w, samples) {
+export function gradeWindow(R, w, samples, T = TIMING) {
   // Where Cosmo himself was not tracked (he left the shot, or the camera
   // lost him), there is nothing fair to grade: the window is skipped.
   if (!refCovers(R, w)) return null;
@@ -197,9 +203,12 @@ export function gradeWindow(R, w, samples) {
   const seen = samples.filter(x => x.angs);
   // need some detections in the window (at least ~2.5 a second)
   if (seen.length < Math.max(2, Math.floor(span * 2.5))) return { grade: GRADES[3], s: 0 };
-  const f = fit(R, seen);
+  const f = fit(R, seen, T);
   if (!f) return { grade: GRADES[3], s: 0 };
-  const base = w.chance ?? (w.chance = chance(R, w));
+  // the chance level depends on the allowance too; cached per window and allowance
+  const key = T.early + '/' + T.late;
+  const cache = w.chances || (w.chances = {});
+  const base = cache[key] ?? (cache[key] = chance(R, w, T));
   // Where moves from anywhere else in the routine fit just as well (Cosmo
   // crouched or turned, only a limb or two visible), the window cannot tell
   // good dancing from bad: skip it, like a window where he was not tracked.
@@ -221,7 +230,7 @@ export function gradeWindow(R, w, samples) {
     if (ratio < 0.5) s *= Math.max(0, (ratio - 0.15) / 0.35);
   }
   const grade = GRADES.find(g => s >= g.min);
-  return { grade, s, lag: f.lag, mirror: f.mirror };
+  return { grade, s, lag: f.lag, mirror: f.mirror, edge: f.edge };
 }
 
 export function refCovers(R, w) {

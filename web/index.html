@@ -11,8 +11,10 @@
     --navy: #002e5d; --royal: #0062b8; --tan: #c8a273; --white: #fff;
     --perfect: #ffd54a; --good: #6ee7b7; --ok: #93c5fd; --miss: #94a3b8;
     --p1: #3b9cff; --p2: #ffb020; --p3: #34d399; --p4: #ff5c8a;
+    --p5: #a78bfa; --p6: #fb923c; --p7: #22d3ee; --p8: #e879f9;
   }
   * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  [hidden] { display: none !important; }   /* .row and friends set display, which beats the hidden attribute */
   html, body { margin: 0; height: 100%; overflow: hidden; }
   body {
     background: radial-gradient(ellipse at 50% 120%, #0a4d8c 0%, var(--navy) 55%, #001730 100%);
@@ -134,6 +136,23 @@
   .podium .line { grid-template-columns: 36px auto 1fr auto; }
   .podium .face { width: 64px; height: 80px; }
 
+  /* advice when tracking struggles */
+  .advice { color: var(--perfect); font-weight: 700; font-size: 14px; margin-top: 10px; }
+  .advice:empty { display: none; }
+
+  /* re-grading with another timing allowance */
+  .podium .pct small { display: block; font-size: 12px; font-weight: 700; color: #b8c9dc; text-align: right; }
+  #tuning { margin: 16px auto 0; max-width: 640px; text-align: left; background: #ffffff10; border-radius: 14px; padding: 10px 16px; }
+  #tuning summary { cursor: pointer; font-weight: 800; }
+  #tuning label { display: grid; grid-template-columns: 1fr auto; gap: 4px 10px; margin-top: 12px; font-weight: 700; }
+  #tuning input[type=range] { grid-column: span 2; width: 100%; accent-color: var(--tan); }
+  #tuning output { font-variant-numeric: tabular-nums; color: var(--tan); }
+  #tuning .hint { font-size: 13px; color: #b8c9dc; margin: 6px 0 0; }
+  #lagStats { margin-top: 12px; font-size: 13px; color: #d6e4f3; display: grid; gap: 4px; }
+  #lagStats b { color: var(--c); }
+  #tuning .row { margin-top: 12px; }
+  #tuning button { font-size: 13px; padding: 8px 14px; }
+
   /* the replay */
   #replayRow { margin-top: 14px; }
   #replayView { z-index: 8; background: #000d; }
@@ -164,7 +183,7 @@
   <div class="sheet">
     <div class="kicker">Holy War Week · Game Day Party</div>
     <h1 class="display">Cosmo<br>Dance-Off <span class="num">00</span></h1>
-    <p>Dance Cosmo's routines with the Cougarettes. The camera watches up to four dancers
+    <p>Dance Cosmo's routines with the Cougarettes. The camera watches up to eight dancers
       and grades every move. Copy him straight on or like a mirror, both count. You get a replay to share.</p>
     <div class="row"><button id="go">Let's dance</button></div>
     <p id="status"></p>
@@ -176,7 +195,7 @@
     <div class="kicker">Line up</div>
     <ol>
       <li>Stand back until the camera sees you <b>head to toe</b>.</li>
-      <li>Up to <b>4 dancers</b>, side by side, not in front of each other. Tape an X for each one.</li>
+      <li>As many dancers as fit <b>side by side</b>, not in front of each other (up to 8). Tape an X for each one.</li>
       <li>Stay on your spot: that's how the camera knows who's who.</li>
     </ol>
     <div class="songs" id="songs"></div>
@@ -188,6 +207,7 @@
         <div id="tdBar"><i></i></div>
       </div>
     </div>
+    <div id="advice" class="advice"></div>
     <div class="row" style="justify-content:flex-start">
       <button id="start">Start the song</button>
       <select id="camPick" hidden></select>
@@ -200,6 +220,22 @@
     <div class="kicker">Final whistle</div>
     <h1 class="display" id="winner">Winner</h1>
     <div class="podium" id="podium"></div>
+    <p id="resultsAdvice" class="advice"></p>
+    <details id="tuning">
+      <summary>Timing: how far off the beat still counts</summary>
+      <p class="hint">Drag to re-grade this song; scores update as you go. Widening helps dancers who
+        are late, and can cost on-time dancers a little: random moves fit a wide allowance better too, so the bar rises.</p>
+      <label>Ahead of Cosmo <output id="earlyVal"></output>
+        <input type="range" id="early" min="0" max="0.8" step="0.05"></label>
+      <label>Behind Cosmo <output id="lateVal"></output>
+        <input type="range" id="late" min="0.1" max="1.5" step="0.05"></label>
+      <div id="lagStats"></div>
+      <div class="row">
+        <button id="keepTiming" class="ghost">Use these from now on</button>
+        <button id="resetTiming" class="ghost">Back to defaults</button>
+      </div>
+      <p id="timingNote" class="hint"></p>
+    </details>
     <div class="row" id="replayRow"><button id="watch" class="ghost" disabled>Making your replay…</button></div>
     <div class="row"><button id="again">Dance again</button></div>
     <p id="best"></p>

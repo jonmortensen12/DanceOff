@@ -53,7 +53,7 @@ function scoring(song) {
   check(found / ref.frames.length > 0.8, `${song.id}: Cosmo is tracked through most of the clip (${Math.round(100 * found / ref.frames.length)}%)`);
   check(W.length > 25 && W[0][0] >= song.scoreFrom - 1e-6, `${song.id}: scoring starts at or after clip ${song.scoreFrom} s`);
 
-  function simulate(poseAt, aspect, fps = 15) {
+  function simulate(poseAt, aspect, fps = 15, T = S.TIMING) {
     const grades = [];
     for (const w of W) {
       const samples = [];
@@ -61,7 +61,7 @@ function scoring(song) {
         const pose = poseAt(t); if (!pose) continue;
         samples.push({ t, angs: S.angles(pose, aspect), mir: S.angles(pose, aspect, true) });
       }
-      const g = S.gradeWindow(R, w, samples);
+      const g = S.gradeWindow(R, w, samples, T);
       if (g) grades.push(g.grade);
     }
     const counts = {}; grades.forEach(g => counts[g.name] = (counts[g.name] || 0) + 1);
@@ -89,6 +89,12 @@ function scoring(song) {
     'making up their own moves': simulate(madeUp, ref.aspect),
     'dancing a different part of the song (6 s off)': simulate(t => refAt(t + 6) || refAt(t - 6), ref.aspect),
   };
+  // the timing allowance can be widened afterwards: a slow copier
+  cases['copying 0.8 s late (default allowance)'] = simulate(t => refAt(t - 0.8), ref.aspect);
+  cases['copying 0.8 s late, Behind widened to 1.0 s'] = simulate(t => refAt(t - 0.8), ref.aspect, 15, { early: S.EARLY, late: 1.0 });
+  const WIDE = { early: 0.8, late: 1.5 };   // the sliders' far ends
+  cases['making up their own moves, widest allowance'] = simulate(madeUp, ref.aspect, 15, WIDE);
+  cases['standing still, widest allowance'] = simulate(() => still, ref.aspect, 15, WIDE);
   for (const [k, v] of Object.entries(cases)) console.log(`  ${k.padEnd(52)} ${String(v.pct).padStart(3)}%  ${JSON.stringify(v.counts)}`);
   check(cases['copying Cosmo, 0.25 s late'].pct >= 85, `${song.id}: a good copy scores 85% or more`);
   check(cases['a kid: half size, 4:3 phone camera, off to one side'].pct >= 85, `${song.id}: size, position and camera shape do not matter`);
@@ -96,6 +102,10 @@ function scoring(song) {
   check(cases['copying, with shaky tracking, 0.4 s late'].pct >= 70, `${song.id}: a late copy through shaky tracking still scores 70% or more`);
   check(cases['standing still'].pct <= 15, `${song.id}: standing still scores 15% or less`);
   check(cases['making up their own moves'].pct <= 20, `${song.id}: making up your own moves scores 20% or less`);
+  check(cases['copying 0.8 s late (default allowance)'].pct < 60 && cases['copying 0.8 s late, Behind widened to 1.0 s'].pct >= 85,
+    `${song.id}: a slow copier fails the default allowance and passes a wider one`);
+  check(cases['making up their own moves, widest allowance'].pct <= 30 && cases['standing still, widest allowance'].pct <= 15,
+    `${song.id}: even at the widest allowance, made-up moves and standing still score low`);
   check(cases['dancing a different part of the song (6 s off)'].pct <= 25, `${song.id}: the wrong part of the song scores 25% or less`);
 }
 for (const song of SONGS) scoring(song);
@@ -148,7 +158,11 @@ if (!process.argv.includes('--quick')) {
   if (!fs.existsSync(mirrorOut) || fs.statSync(mirrorOut).mtimeMs < fs.statSync(path.join(CACHE, 'cam-cosmo.webm')).mtimeMs)
     execFileSync('ffmpeg', ['-v', 'error', '-y', '-i', path.join(CACHE, 'cam-cosmo.webm'), '-vf', 'hflip', '-c:v', 'libvpx-vp9', '-b:v', '700k',
       '-deadline', 'realtime', '-cpu-used', '8', mirrorOut]);
+  // a group: six Cougarettes from the start of Cougarettes in White, cropped and enlarged to
+  // living-room size (tools/testcam-group.webm, committed)
+  fs.copyFileSync(path.join(ROOT, 'tools/testcam-group.webm'), path.join(CACHE, 'testcam-group.webm'));
   const cams = {
+    group: '/testcam/testcam-group.webm',
     cosmo: '/testcam/cam-cosmo.webm',
     mirror: '/testcam/cam-cosmo-mirror.webm',
     crowd: make('cam-crowd.webm', 'scale=960:-2'),
@@ -198,6 +212,8 @@ if (!process.argv.includes('--quick')) {
     if (process.argv.includes('--verbose')) for (const p of st.players)
       console.log(`     ${p.name}: ` + p.log.map(l => `${l.t}:${l.s}${l.mirror ? 'm' : ''}/${l.n}`).join(' '));
     check(!errors.length && !st.errors.length, `${label}: no page errors ${[...errors, ...st.errors].slice(0, 3).join(' | ')}`);
+    if (!replay) check(await page.evaluate(() => getComputedStyle(document.getElementById('replayRow')).display === 'none'),
+      `${label}: no replay recorded, so no replay button`);
     if (expectAll) check(st.windowsGraded === st.windowsTotal && st.windowsTotal > 0, `${label}: every window graded (${st.windowsGraded}/${st.windowsTotal})`);
     if (expectDancers) {
       check(st.players.length >= 1, `${label}: found someone dancing`);
@@ -205,6 +221,24 @@ if (!process.argv.includes('--quick')) {
         `${label}: every dancer on the podium has a photo`);
     }
     let result = { best, st, page };
+    if (label === 'late') {
+      const pctOf = () => page.evaluate(() => Math.max(...window.__dance.players.map(p => p.pct)));
+      const setT = async (e, l) => { await page.evaluate(([e, l]) => {
+        for (const [id, v] of [['early', e], ['late', l]]) { const el = document.getElementById(id); el.value = v; el.dispatchEvent(new Event('input')); }
+      }, [e, l]); await page.waitForTimeout(1200); };
+      await page.click('#tuning summary');
+      const panel = await page.evaluate(() => document.querySelectorAll('#lagStats div').length > 0 && !!document.getElementById('late'));
+      const base = await pctOf();
+      await setT(0.25, 1.1); const wide = await pctOf();
+      await page.screenshot({ path: path.join(CACHE, 'timing.png'), fullPage: true });
+      const stats = await page.evaluate(() => document.getElementById('lagStats').textContent);
+      await setT(0, 0.1); const tight = await pctOf();
+      await setT(0.5, 1.0);
+      await page.click('#keepTiming');
+      const saved = await page.evaluate(() => JSON.parse(localStorage.getItem('danceoff.timing')));
+      await page.click('#resetTiming');
+      result.timing = { panel, base, tight, wide, saved, stats };
+    }
     if (label === 'cosmo') await page.screenshot({ path: path.join(CACHE, 'results.png') });
     if (replay) {
       check(st.replay && st.replay.size > 100000, `${label}: a replay video was made (${st.replay ? Math.round(st.replay.size / 1024) + ' KB ' + st.replay.type : 'none'})`);
@@ -228,9 +262,45 @@ if (!process.argv.includes('--quick')) {
   const q = `cpu=1&model=full&end=${END}&testcam=`;
   const cosmo = await run('cosmo', `song=rolex&${q}${cams.cosmo}`, { start: 'touchdown', replay: true,
     during: async page => { await page.waitForTimeout(9000); await page.screenshot({ path: path.join(CACHE, 'playing.png') }); } });
+  // A group in view: the person detector counts them, the extra crop looks
+  // follow more of them than the whole-frame look alone, and when it still
+  // cannot follow everyone the line-up screen says to use fewer dancers.
+  // (crops=always: this machine is too slow for the speed gate to allow them.)
+  async function groupLook(crops) {
+    const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
+    await page.goto(`${url}/index.html?cpu=1&model=full&noreplay=1&crops=${crops}&testcam=${cams.group}&testcamAt=0.5`);
+    await page.click('#go');
+    await page.waitForFunction(() => window.__dance.phase === 'setup', null, { timeout: 120000 });
+    let most = 0, inView = 0, advice = '';
+    for (const t of [0.5, 1.5, 2.5]) {
+      await page.evaluate(t => { document.getElementById('cam').currentTime = t; }, t);
+      await page.waitForTimeout(2500);
+      const st = await page.evaluate(() => ({ f: window.__dance.followed, v: window.__dance.inView, a: document.getElementById('advice').textContent }));
+      most = Math.max(most, st.f || 0); inView = Math.max(inView, st.v || 0); if (st.a) advice = st.a;
+    }
+    await page.close();
+    return { most, inView, advice };
+  }
+  const withCrops = await groupLook('always'), without = await groupLook('0');
+  console.log(`  group: followed ${without.most} without crops, ${withCrops.most} with; ${withCrops.inView} counted in view`);
+  check(withCrops.inView >= 4, `group: the person detector counts the group (${withCrops.inView} in view)`);
+  check(withCrops.most > without.most, `group: crops follow more dancers than the whole-frame look alone (${withCrops.most} vs ${without.most})`);
+  check(/can see \d+ people but can only follow/.test(withCrops.advice), `group: line-up advises fewer dancers ("${withCrops.advice}")`);
+
   const mirror = await run('mirror', `song=rolex&${q}${cams.mirror}`);
   const frozen = await run('frozen', `song=rolex&${q}${cams.frozen}`);
   await run('crowd', `song=rolex&${q}${cams.crowd}`);   // the whole stadium shot: just must not break
+  // re-grading the finished song with the Ahead / Behind sliders: a dancer
+  // copying 0.8 s late fails the default allowance, and passes once Behind is widened
+  const late = await run('late', `song=rolex&${q}${cams.cosmo}&testcamLag=0.8`);
+  if (late && late.timing) {
+    const t = late.timing;
+    console.log(`  timing: late dancer ${t.base}% at the default, ${t.wide}% with Behind 1.1 s, ${t.tight}% with almost none; panel says "${t.stats.slice(0, 90)}…"`);
+    check(t.panel, 'timing: the results screen has the Ahead / Behind sliders and each dancer\'s typical delay');
+    check(t.wide >= t.base + 20 && t.tight < t.base, `timing: widening Behind lifts a late dancer, narrowing drops them (${t.tight}% / ${t.base}% / ${t.wide}%)`);
+    check(/limit/.test(t.stats), 'timing: the panel says how often moves hit the limit');
+    check(t.saved && t.saved.late === 1 && t.saved.early === 0.5, 'timing: "Use these from now on" keeps the values on the device');
+  } else check(false, 'timing: the late run reached results');
   check(cosmo && cosmo.best >= 75, `Cosmo himself, as the camera, scores well (best dancer ${cosmo && cosmo.best}%)`);
   check(mirror && mirror.best >= 75, `Cosmo flipped (a mirror copy), as the camera, scores well (best dancer ${mirror && mirror.best}%)`);
   check(frozen && frozen.best <= 30, `a frozen frame scores badly (best ${frozen && frozen.best}%)`);

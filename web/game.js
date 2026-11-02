@@ -9,10 +9,12 @@
 //   ?cpu=1             no GPU for the pose model
 //   ?testcam=URL       use a video file as the camera, kept in step with the song
 //   ?testcamAt=SEC     where that video sits during setup (default: when scoring starts)
+//   ?testcamLag=SEC    keep that video SEC behind the song (a dancer copying late)
+//   ?crops=0|always    no extra person crops / crops even when tracking is slow
 //   ?end=SEC           stop the song early (clip time)
 //   ?noreplay=1        do not record a replay
 //   ?debug=1           show detection speed
-import { FilesetResolver, PoseLandmarker } from './lib/mediapipe/vision_bundle.mjs';
+import { FilesetResolver, PoseLandmarker, ObjectDetector } from './lib/mediapipe/vision_bundle.mjs';
 import * as S from './score.js';
 import { Touchdown } from './gesture.js';
 import * as Replay from './replay.js';
@@ -23,9 +25,12 @@ const PHONE = matchMedia('(pointer: coarse)').matches && Math.min(screen.width, 
 const MODEL = Q.get('model') || (PHONE ? 'lite' : 'full');
 const TESTCAM = Q.get('testcam');
 const END = Q.has('end') ? +Q.get('end') : null;
-const COLORS = ['--p1', '--p2', '--p3', '--p4'].map(v => getComputedStyle(document.documentElement).getPropertyValue(v).trim());
+const COLORS = ['--p1', '--p2', '--p3', '--p4', '--p5', '--p6', '--p7', '--p8'].map(v => getComputedStyle(document.documentElement).getPropertyValue(v).trim());
 const GRADE_COLORS = { PERFECT: '--perfect', GOOD: '--good', OK: '--ok', MISS: '--miss' };
-const MAX_DANCERS = 4;
+// As many as fit side by side in the shot. Past ~4 the pose model slows and
+// people start hiding each other; the line-up screen measures that and says
+// when to use fewer (see health()).
+const MAX_DANCERS = 8;
 // seconds between the dancer moving and the frame reaching us, roughly (a
 // video file standing in for the camera has none)
 const CAM_LAG = TESTCAM ? 0 : 0.08;
@@ -49,6 +54,15 @@ let wi = 0;               // next window to grade
 let lastCamTime = -1, lastStamp = 0;
 let recorder = null, replay = null;   // replay: {blob, url, ext}
 const touchdown = new Touchdown();
+// The timing allowance (how far ahead of / behind Cosmo a move may be). The
+// results screen's sliders re-grade the song with other values; "Use these
+// from now on" keeps them on this device.
+let TIMING = loadTiming();
+function loadTiming() {
+  try { const t = JSON.parse(localStorage.getItem('danceoff.timing')); if (t && t.early >= 0 && t.late > 0) return { early: t.early, late: t.late }; } catch (e) {}
+  return { ...S.TIMING };
+}
+state.timing = TIMING;
 let tdState = { up: [], progress: 0 };
 
 function status(msg, err) { const el = $('status'); el.textContent = msg; el.classList.toggle('err', !!err); }
@@ -87,12 +101,78 @@ async function loadModel() {
     runningMode: 'VIDEO', numPoses: MAX_DANCERS,
     minPoseDetectionConfidence: 0.5, minPosePresenceConfidence: 0.5, minTrackingConfidence: 0.5,
   });
+  const cropOpts = delegate => ({
+    baseOptions: { modelAssetPath: `models/pose_${MODEL}.task`, delegate },
+    runningMode: 'IMAGE', numPoses: 1,
+    minPoseDetectionConfidence: 0.4, minPosePresenceConfidence: 0.4,
+  });
+  const personOpts = delegate => ({
+    baseOptions: { modelAssetPath: 'models/person.tflite', delegate },
+    runningMode: 'IMAGE', categoryAllowlist: ['person'], scoreThreshold: 0.35, maxResults: 12,
+  });
+  const extras = async delegate => {
+    if (!CROPS) return;
+    cropPose = await PoseLandmarker.createFromOptions(vision, cropOpts(delegate));
+    people = await ObjectDetector.createFromOptions(vision, personOpts(delegate));
+  };
   if (!Q.has('cpu')) {
-    try { landmarker = await PoseLandmarker.createFromOptions(vision, opts('GPU')); state.delegate = 'GPU'; return; }
-    catch (e) { console.warn('GPU pose failed, using CPU', e); }
+    try {
+      landmarker = await PoseLandmarker.createFromOptions(vision, opts('GPU')); state.delegate = 'GPU';
+      await extras('GPU');
+      return;
+    } catch (e) { console.warn('GPU pose failed, using CPU', e); }
   }
   landmarker = await PoseLandmarker.createFromOptions(vision, opts('CPU'));
+  await extras('CPU');
   state.delegate = 'CPU';
+}
+
+// Groups. MediaPipe's pose model is built for one person: it finds people
+// by their faces and, once it is following someone, mostly keeps to them.
+// On six Cougarettes in a line it found ONE. A person detector (MediaPipe's
+// object detector, EfficientDet-Lite0, `models/person.tflite`) finds people
+// far better (5-6 of the 6), so:
+// - about twice a second it counts everyone in view (state.inView), which
+//   is how the game knows when it is following fewer people than are
+//   there, and says to use fewer dancers (setupAdvice / resultsAdvice);
+// - each frame, ONE extra pose look goes to someone in view the whole-frame
+//   look missed, on a crop round just them, where they fill the picture.
+//   Taking turns keeps it to about twice the work, whatever the crowd.
+// Skipped while tracking runs under 10 looks a second (the whole-frame look
+// comes first). ?crops=0 turns all this off; ?crops=always ignores the speed
+// (for testing on a slow machine).
+const CROPS = Q.get('crops') !== '0';
+let cropPose = null, people = null, boxes = [], boxesAt = 0, cropTurn = 0;
+const cropCanvas = document.createElement('canvas');
+const cctx = cropCanvas.getContext('2d');
+let inViewLog = [], recentFinds = [];   // [{at, inView, followed}] over the last few seconds
+function countPeople(now) {
+  if (!people || now - boxesAt < 500) return;
+  boxesAt = now;
+  const vw = cam.videoWidth, vh = cam.videoHeight;
+  boxes = people.detect(cam).detections
+    .map(d => ({ x: d.boundingBox.originX / vw, y: d.boundingBox.originY / vh, w: d.boundingBox.width / vw, h: d.boundingBox.height / vh }))
+    .filter(b => b.h > 0.15);   // whole-ish people, not heads in the background
+  state.inView = boxes.length;
+}
+function cropLook(found) {
+  if (!cropPose || !boxes.length) return [];
+  if (Q.get('crops') !== 'always' && detTimes.length > 10 && detectRate() < 10) return [];
+  // people in view that no pose is inside yet
+  const missed = boxes.filter(b => !found.some(d => d.c[0] > b.x && d.c[0] < b.x + b.w && d.c[1] > b.y && d.c[1] < b.y + b.h));
+  state.missed = missed.length;
+  if (!missed.length) return [];
+  const b = missed[cropTurn++ % missed.length];
+  const vw = cam.videoWidth, vh = cam.videoHeight;
+  const side = Math.max(b.w * vw, b.h * vh) * 1.25;
+  const x0 = (b.x + b.w / 2) * vw - side / 2, y0 = (b.y + b.h / 2) * vh - side / 2;
+  cropCanvas.width = cropCanvas.height = 256;
+  cctx.fillStyle = '#000'; cctx.fillRect(0, 0, 256, 256);
+  cctx.drawImage(cam, x0, y0, side, side, 0, 0, 256, 256);
+  const res = cropPose.detect(cropCanvas);
+  state.cropFinds = (state.cropFinds || 0) + res.landmarks.length;
+  // back to whole-frame coordinates
+  return res.landmarks.map(lm => lm.map(p => ({ x: (x0 + p.x * side) / vw, y: (y0 + p.y * side) / vh, visibility: p.visibility })));
 }
 
 async function openCamera(deviceId) {
@@ -191,22 +271,90 @@ function detect() {
   const res = landmarker.detectForVideo(cam, stamp);
   state.detectMs = state.detectMs * 0.9 + (performance.now() - t0) * 0.1;
   state.detections++;
+  detTimes.push(t0); while (detTimes.length && t0 - detTimes[0] > 3000) detTimes.shift();
   const aspect = cam.videoWidth / cam.videoHeight;
   // the colours, from a 160 px wide copy of this frame (cheap)
   grab.width = 160; grab.height = Math.round(160 / aspect);
   gctx.drawImage(cam, 0, 0, grab.width, grab.height);
   try { pixels = gctx.getImageData(0, 0, grab.width, grab.height); } catch (e) { pixels = null; }
-  latest = res.landmarks.map(lm => {
-    const pose = toPose13(lm);
-    return { pose, c: centreOf(pose), s: sizeOf(pose, aspect) };
-  }).filter(d => d.s > 0.04)   // ignore tiny far-off people (and posters)
-    .sort((a, b) => b.s - a.s);
-  // The model sometimes reports one person twice, slightly apart. Two
-  // bodies whose middles are closer than half a torso are one dancer.
-  latest = latest.filter((d, i) => !latest.slice(0, i).some(e => Math.hypot(d.c[0] - e.c[0], (d.c[1] - e.c[1]) / aspect) < 0.5 * e.s));
+  const toDet = lm => { const pose = toPose13(lm); return { pose, c: centreOf(pose), s: sizeOf(pose, aspect) }; };
+  const whole = res.landmarks.map(toDet);
+  countPeople(t0);
+  const cropped = cropLook(whole).map(toDet);
+  // whole-frame people first: where both looks found someone, the whole-frame one is kept
+  latest = whole.concat(cropped).filter(d => d.s > 0.04);   // ignore tiny far-off people (and posters)
+  // The model sometimes reports one person twice, slightly apart, and a crop
+  // can find someone the whole frame already has. Two bodies whose middles are
+  // closer than half a torso are one dancer.
+  latest = latest.filter((d, i) => !latest.slice(0, i).some(e => Math.hypot(d.c[0] - e.c[0], (d.c[1] - e.c[1]) / aspect) < 0.5 * Math.max(d.s, e.s)));
+  latest.sort((a, b) => b.s - a.s);
+  // Everyone found by any look in the last 0.8 s: the extra crop look visits
+  // one missed person per frame, so a single frame undercounts.
+  for (const d of latest) recentFinds.push({ c: d.c, at: t0 });
+  while (recentFinds.length && t0 - recentFinds[0].at > 800) recentFinds.shift();
+  const distinct = [];
+  for (const f of recentFinds) if (!distinct.some(c => Math.hypot(c[0] - f.c[0], c[1] - f.c[1]) < 0.06)) distinct.push(f.c);
+  state.followed = distinct.length;
+  // people in view vs people followed, over the last 3 s, for the advice
+  if (people) {
+    const followed = state.phase === 'setup' ? state.followed : players.filter(p => p.pose || t0 - p.lastSeen < 700).length;
+    inViewLog.push({ at: t0, inView: state.inView || 0, followed });
+    while (inViewLog.length && t0 - inViewLog[0].at > 3000) inViewLog.shift();
+  }
   latest.forEach(d => { d.sig = signature(d.pose); });
   state.seen = latest.length;
   return true;
+}
+
+// ---------------- tracking health ----------------
+// How well tracking is keeping up, so the game can say "use fewer dancers"
+// rather than quietly scoring people wrong. Two things go wrong with a crowd:
+// the model slows (fewer looks a second at each dancer), and people overlap
+// (hidden limbs, swapped identities).
+const detTimes = [];
+let health = { ticks: 0, seen: 0, minRate: Infinity };
+function detectRate() {
+  if (detTimes.length < 2) return 0;
+  return (detTimes.length - 1) / ((detTimes[detTimes.length - 1] - detTimes[0]) / 1000);
+}
+const SLOW_RATE = 8;   // looks a second; below this, quick moves slip between frames
+function overlapping(list) {
+  for (let i = 0; i < list.length; i++) for (let j = i + 1; j < list.length; j++) {
+    const a = list[i], b = list[j];
+    if (Math.abs(a.c[0] - b.c[0]) < 0.6 * Math.max(a.s, b.s)) return true;   // one in front of the other
+  }
+  return false;
+}
+// Over the last 3 s, did the camera see more people than it could follow,
+// most of the time? (One look missing someone is normal; a steady gap is not.)
+function followingGap() {
+  if (inViewLog.length < 6) return null;
+  const short = inViewLog.filter(x => x.inView > x.followed);
+  if (short.length < 0.7 * inViewLog.length) return null;
+  const med = k => { const v = inViewLog.map(x => x[k]).sort((a, b) => a - b); return v[v.length >> 1]; };
+  const inView = med('inView'), followed = med('followed');
+  return inView > followed ? { inView, followed } : null;
+}
+function setupAdvice() {
+  const n = latest.length, rate = detectRate();
+  const tips = [];
+  if (n >= 2 && overlapping(latest)) tips.push('Some dancers are in front of each other: spread out side by side.');
+  const gap = followingGap();
+  if (gap) tips.push(`I can see ${gap.inView} people but can only follow ${gap.followed}. Try ${gap.followed > 1 ? gap.followed : 'fewer'} dancers, more light, or more space between you.`);
+  if (n >= 2 && cam.videoWidth && cam.videoWidth < cam.videoHeight * 1.2) tips.push('Turn the phone sideways: it fits more dancers and finds them better.');
+  if (n >= 2 && detTimes.length > 10 && rate < SLOW_RATE)
+    tips.push(`Tracking is slow with ${n} dancers (${rate.toFixed(0)} looks a second). ${n > 2 ? `Try ${Math.max(2, n - 2)}–${n - 1}` : 'Fewer dancers'} for fairer scores.`);
+  return tips.join(' ');
+}
+function resultsAdvice() {
+  const seen = health.ticks ? health.seen / health.ticks : 1;
+  const tips = [];
+  if (health.minRate < SLOW_RATE) tips.push(`Tracking was slow this round (as low as ${health.minRate.toFixed(0)} looks a second with ${players.length} dancer${players.length === 1 ? '' : 's'}).`);
+  if (players.length > 1 && seen < 0.75) tips.push(`The camera lost dancers ${Math.round(100 * (1 - seen))}% of the time.`);
+  if (health.gapTicks > 0.5 * health.ticks && health.maxInView > players.length)
+    tips.push(`It could see ${health.maxInView} people but followed only ${players.length}.`);
+  if (tips.length) tips.push(players.length > 2 ? 'Fewer dancers, or more space between them, will score more fairly.' : 'More light and space will help.');
+  return tips.join(' ');
 }
 
 // ---------------- players ----------------
@@ -214,7 +362,7 @@ function newPlayer(i, d) {
   const names = loadNames();
   const p = { i, name: names[i] || 'P' + (i + 1), color: COLORS[i], c: d ? d.c : [0.5, 0.5], s: d ? d.s : 0.2,
     pose: d ? d.pose : null, sig: d ? d.sig : null, lastSeen: performance.now(), samples: [], grades: [], last: null, lastAt: 0,
-    combo: 0, bestCombo: 0, present: 0, log: [], photo: null, img: null, counts: { PERFECT: 0, GOOD: 0, OK: 0, MISS: 0 } };
+    combo: 0, bestCombo: 0, present: 0, log: [], all: [], firstPct: null, photo: null, img: null, counts: { PERFECT: 0, GOOD: 0, OK: 0, MISS: 0 } };
   if (d) takePhoto(p, d.pose);
   return p;
 }
@@ -312,16 +460,21 @@ function sample() {
   for (const p of players) {
     if (!p.pose) continue;
     const angs = S.angles(p.pose, aspect), mir = S.angles(p.pose, aspect, true);
-    p.samples.push({ t, angs, mir });
+    const x = { t, angs, mir };
+    p.samples.push(x); p.all.push(x);   // all: the whole song, for re-grading afterwards
   }
+  health.ticks++;
+  const gap = followingGap();
+  if (gap) { health.gapTicks = (health.gapTicks || 0) + 1; health.maxInView = Math.max(health.maxInView || 0, gap.inView); }
+  health.seen += players.filter(p => p.pose).length / Math.max(1, players.length);
 }
 
-function gradeWindow(w, p) {
-  const inW = p.samples.filter(x => x.t >= w[0] && x.t < w[1]);
-  const res = S.gradeWindow(R, w, inW);
+function gradeWindow(w, p, from = p.samples) {
+  const inW = from.filter(x => x.t >= w[0] && x.t < w[1]);
+  const res = S.gradeWindow(R, w, inW, TIMING);
   if (!res) return null;            // Cosmo not tracked here: not graded
   if (inW.length >= 2) p.present++;
-  p.log.push({ t: +w[0].toFixed(2), s: +res.s.toFixed(2), lag: res.lag, mirror: res.mirror, n: inW.length });
+  p.log.push({ t: +w[0].toFixed(2), s: +res.s.toFixed(2), lag: res.lag, mirror: res.mirror, edge: res.edge, n: inW.length });
   const g = res.grade;
   p.grades.push(g); p.counts[g.name]++;
   p.combo = g.pts >= 2 ? p.combo + 1 : 0; p.bestCombo = Math.max(p.bestCombo, p.combo);
@@ -336,7 +489,7 @@ function gradeDue(final) {
     for (const p of players) {
       const g = gradeWindow(w, p);
       if (g) { p.last = g; p.lastAt = performance.now(); }
-      p.samples = p.samples.filter(x => x.t >= w[1] - S.LATE);
+      p.samples = p.samples.filter(x => x.t >= w[1] - 2);
     }
     wi++; state.windowsGraded = wi;
     updateCards();
@@ -446,8 +599,8 @@ let lastCardUpdate = 0;
 function tick() {
   requestAnimationFrame(tick);
   if (state.phase === 'playing' && TESTCAM) {
-    // keep the pretend camera in step with the song
-    const want = songTime();
+    // keep the pretend camera in step with the song (or ?testcamLag=SEC behind it: a slow copier)
+    const want = Math.max(0, songTime() - (+Q.get('testcamLag') || 0));
     if (Math.abs(cam.currentTime - want) > 0.15) cam.currentTime = want;
   }
   const fresh = detect();
@@ -456,14 +609,20 @@ function tick() {
     if (fresh) {
       tdState = touchdown.update(latest.map(d => d.pose), latest.map(d => d.c), now);
       state.touchdown = { progress: tdState.progress, ready: tdState.ready, up: tdState.up.filter(Boolean).length };
-      const n = latest.length, up = tdState.up.filter(Boolean).length;
+      const n = Math.max(latest.length, state.followed || 0), up = tdState.up.filter(Boolean).length;
       $('seen').textContent = !n ? 'Looking for dancers…'
         : up && up < n ? `${up} of ${n} arms up…` : up === n && tdState.ready ? 'Touchdown! Hold it…' : `${n} dancer${n > 1 ? 's' : ''} ready`;
       $('tdBar').firstElementChild.style.width = (100 * tdState.progress) + '%';
+      const tip = setupAdvice();
+      if ($('advice').textContent !== tip) $('advice').textContent = tip;
+      state.advice = tip;
       if (tdState.fired) startSong('touchdown');
     }
   } else if (state.phase === 'playing') {
-    if (fresh) { assign(); sample(); }
+    if (fresh) {
+      assign(); sample();
+      if (detTimes.length > 15 && songTime() > 2) health.minRate = Math.min(health.minRate, detectRate());
+    }
     gradeDue(false);
     const t = songTime();
     if (t < R.scoreFrom) {
@@ -526,6 +685,7 @@ async function startSong(by) {
   setupPlayers();
   buildCards();
   wi = 0; state.windowsGraded = 0;
+  health = { ticks: 0, seen: 0, minRate: Infinity };
   $('setup').hidden = true;
   document.body.classList.remove('lineup');
   $('controls').hidden = false; $('pause').textContent = 'Pause';
@@ -571,7 +731,11 @@ async function finish() {
   $('controls').hidden = true;
   try { wakeLock && wakeLock.release(); } catch (e) {}
   banner('');
-  const ranked = showResults();
+  players.forEach(p => { p.firstPct = S.percent(p.grades); });
+  $('resultsAdvice').textContent = resultsAdvice();
+  state.resultsAdvice = $('resultsAdvice').textContent;
+  setupTuning();
+  const ranked = showResults(true);
   if (recorder) {
     const rec = recorder; recorder = null;
     $('watch').disabled = true; $('watch').textContent = 'Making your replay…'; $('replayRow').hidden = false;
@@ -588,7 +752,7 @@ async function finish() {
 }
 let replayUrl = null;
 
-function showResults() {
+function showResults(first = false) {
   // someone the camera only glimpsed (a passer-by, a false detection) is not on the podium
   const ranked = players.filter(p => p.present >= Math.max(1, 0.25 * p.grades.length))
     .map(p => ({ p, pct: S.percent(p.grades) }))
@@ -604,17 +768,70 @@ function showResults() {
       ${p.photo ? `<img class="face" src="${p.photo}" alt="">` : '<div class="face"></div>'}
       <div><div class="name">${escapeHtml(p.name)}</div><div class="ttl">${S.title(pct)}</div>
         <div class="counts">${p.counts.PERFECT} perfect · ${p.counts.GOOD} good · ${p.counts.OK} ok · ${p.counts.MISS} miss · best streak ${p.bestCombo}</div></div>
-      <div class="pct">${pct}%</div>
+      <div class="pct">${pct}%${p.firstPct != null && p.firstPct !== pct ? `<small>${pct > p.firstPct ? '▲' : '▼'} was ${p.firstPct}%</small>` : ''}</div>
     </div>`).join('') || '<p>The camera could not see anyone. Step back so it sees you head to toe.</p>';
   let best = 0;
   const key = 'danceoff.best.' + SONG.id;
   try { best = +localStorage.getItem(key) || 0; } catch (e) {}
   const top = ranked.length ? ranked[0].pct : 0;
+  if (!first) { $('results').hidden = false; return ranked; }   // re-graded with the sliders: not a new record
   if (top > best) { best = top; try { localStorage.setItem(key, String(best)); } catch (e) {} $('best').textContent = `New best on this device for ${SONG.title}: ${best}%!`; }
   else $('best').textContent = `Best on this device for ${SONG.title}: ${best}%`;
   $('results').hidden = false;
   return ranked;
 }
+
+// ---------------- re-tuning the timing after a song ----------------
+// Every camera sample of the song is kept (p.all), so the whole song can be
+// graded again with another allowance: drag Ahead / Behind and watch the
+// scores move. Each dancer's typical delay, and how often their best fit
+// sat right at the limit, say which way to go.
+function regrade() {
+  for (const p of players) {
+    Object.assign(p, { grades: [], counts: { PERFECT: 0, GOOD: 0, OK: 0, MISS: 0 }, combo: 0, bestCombo: 0, present: 0, log: [] });
+    for (let k = 0; k < wi; k++) gradeWindow(WINDOWS[k], p, p.all);
+  }
+  showResults();
+  timingStats();
+}
+function timingStats() {
+  $('lagStats').innerHTML = players.filter(p => p.log.length).map(p => {
+    const lags = p.log.filter(l => l.lag != null && l.n >= 2).map(l => l.lag).sort((a, b) => a - b);
+    if (!lags.length) return '';
+    const med = lags[lags.length >> 1];
+    const late = p.log.filter(l => l.edge === 'late').length / lags.length, early = p.log.filter(l => l.edge === 'early').length / lags.length;
+    const when = Math.abs(med) < 0.05 ? 'right on the beat' : med > 0 ? `${med.toFixed(2)} s behind` : `${(-med).toFixed(2)} s ahead`;
+    const hint = late > 0.25 ? ' · often at the Behind limit: try more Behind' : early > 0.25 ? ' · often at the Ahead limit: try more Ahead' : '';
+    return `<div style="--c:${p.color}"><b>${escapeHtml(p.name)}</b> usually ${when} · ${Math.round(100 * late)}% of moves at the Behind limit, ${Math.round(100 * early)}% at Ahead${hint}</div>`;
+  }).join('');
+}
+function showTiming() {
+  $('earlyVal').textContent = TIMING.early.toFixed(2) + ' s';
+  $('lateVal').textContent = TIMING.late.toFixed(2) + ' s';
+  $('early').value = TIMING.early; $('late').value = TIMING.late;
+  const saved = loadTiming();
+  $('keepTiming').disabled = saved.early === TIMING.early && saved.late === TIMING.late;
+  state.timing = { ...TIMING };
+}
+function setupTuning() { showTiming(); timingStats(); }
+let regradeTimer = null;
+function onSlider() {
+  TIMING = { early: +$('early').value, late: +$('late').value };
+  showTiming();
+  clearTimeout(regradeTimer);
+  regradeTimer = setTimeout(regrade, 120);
+}
+$('early').oninput = onSlider;
+$('late').oninput = onSlider;
+$('keepTiming').onclick = () => {
+  try { localStorage.setItem('danceoff.timing', JSON.stringify(TIMING)); } catch (e) {}
+  showTiming(); $('timingNote').textContent = `Saved: ${TIMING.early.toFixed(2)} s ahead, ${TIMING.late.toFixed(2)} s behind, from now on on this device.`;
+};
+$('resetTiming').onclick = () => {
+  try { localStorage.removeItem('danceoff.timing'); } catch (e) {}
+  TIMING = { ...S.TIMING }; showTiming(); regrade();
+  $('timingNote').textContent = `Back to the defaults (${S.EARLY} s ahead, ${S.LATE} s behind).`;
+};
 
 // ---------------- the replay viewer ----------------
 function replayName() {

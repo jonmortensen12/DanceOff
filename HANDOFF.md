@@ -3,7 +3,7 @@
 A dance game for the BYU–Utah game-day party (Saturday 2026-11-07, 10 a.m.
 kickoff). The routines are Cosmo the Cougar's dances with the Cougarettes,
 three to choose from (`web/songs.json`). The first is the viral 2017 one (BYU
-vs Boise State, Ayo & Teo's "Rolex"). It plays on a laptop or a phone. The device's camera watches up to four dancers, and
+vs Boise State, Ayo & Teo's "Rolex"). It plays on a laptop or a phone. The device's camera watches as many dancers as fit side by side (up to 8), and
 every two beats each one gets PERFECT / GOOD / OK / MISS for how closely
 they matched Cosmo. Idea #12 in Night-Watch's `GAMEDAY.md`. It was planned
 for a `cougar-cam` repo but lives here.
@@ -90,6 +90,28 @@ track by eye (below), then `node dancecheck.mjs`.
    cut reaches zero above 0.
 7. **Grades on that 0..1 scale:** PERFECT ≥ 0.70, GOOD ≥ 0.45, OK ≥ 0.25,
    else MISS. Points 3/2/1/0, and the final % is points over the maximum.
+
+### Tuning the timing allowance after a song
+
+The allowance (step 4) defaults to `EARLY` 0.25 s / `LATE` 0.5 s in
+`score.js`, and every grading function takes it as a parameter
+(`{early, late}`). The game keeps every camera sample of the song
+(`p.all`), so the results screen's **Timing** panel can re-grade the
+finished song as the Ahead (0–0.8 s) and Behind (0.1–1.5 s) sliders move.
+Each score shows "▲ was 37%" against what was played. Per dancer it shows
+the median delay of their best fits ("usually 0.73 s behind") and how often
+the best fit sat right at the Ahead or Behind limit (`edge` from `fit`). More
+than a quarter at a limit suggests widening that side. **Use these from now
+on** saves the values in `localStorage` (`danceoff.timing`), and **Back to
+defaults** clears them.
+
+Widening is not free: the chance level (step 5) is computed with the same
+allowance, and random moves fit a wide allowance better too, so the bar
+rises. A dancer 0.8 s late goes from 37% to 74% with Behind at 1.1 s, while
+an on-time dancer drops a few points (82% to 78% at 0.5/1.0).
+`dancecheck --quick` checks that even the sliders' far ends (0.8 / 1.5 s)
+leave made-up moves and standing still scoring low.
+Re-grading with the sliders never sets a "best on this device".
 8. **Windows where Cosmo himself was not tracked** (under 40% of the frames
    around it) are skipped, not counted against anyone. So are windows whose
    chance level is above 0.88 (`MAX_CHANCE`): Cosmo is crouched or turned
@@ -124,9 +146,43 @@ Legend, ≥40 Tailgate Shuffler, ≥25 Walk-On, below that Ute in Disguise.
   together. End grades what was danced (windows not reached are not
   counted) and goes to the results.
 
+## How many dancers (`game.js`, "Groups")
+
+Up to 8 (`MAX_DANCERS`), as many as fit side by side. The limit in practice
+is MediaPipe's pose model, which is built for one person. It finds people by
+their faces and mostly keeps to whoever it is already following. On a frame
+of six Cougarettes in a line it found **one**. Three things help:
+
+- **A person detector** (MediaPipe's ObjectDetector with EfficientDet-Lite0,
+  `web/models/person.tflite`, 7 MB) counts everyone in view about twice a
+  second (`state.inView`). It found 5–6 of the same six.
+- **Crop looks.** Each frame, besides the whole-frame pose look, ONE extra
+  pose look goes to a person the detector sees but no pose covers, on a crop
+  round just them (a second PoseLandmarker in IMAGE mode). They take turns,
+  so it costs about twice the work whatever the crowd. On the group test: 3
+  followed instead of 1. They are skipped while tracking runs under 10 looks
+  a second, so the whole-frame look comes first. `?crops=0` turns them off,
+  and `?crops=always` ignores the speed (the test machine's CPU needs that).
+  An earlier version looked at three fixed slices of the frame instead. It
+  found fewer, because the pose model still had to find faces in each slice.
+- **Advice, measured, not guessed.** During line-up (`setupAdvice`) and on
+  the results (`resultsAdvice`), the game says what is going wrong:
+  - "I can see 6 people but can only follow 3. Try 3 dancers, more light, or
+    more space between you." This fires when, over the last 3 s, the head
+    count was above the number followed most of the time.
+  - Tracking is slow (under 8 looks a second).
+  - Dancers are in front of each other.
+  - A portrait phone ("turn the phone sideways").
+  - The camera lost dancers more than a quarter of the time.
+
+Not measured here: real people in a living room. The test footage (enlarged
+360p stadium video, small faces behind hair) is much harder than a webcam a
+few metres away, so a real room should do better than the group test's 3 of
+6. Try it, and trust the advice line.
+
 ## Photos and who is who (`game.js` `assign`)
 
-When the song starts, whoever is in view becomes P1..P4, numbered left to
+When the song starts, whoever is in view becomes P1..P8, numbered left to
 right as the dancers see themselves in the mirrored camera view, and each
 gets a head-and-shoulders **photo** (`takePhoto`: from the full camera
 frame, mirrored, 160×200 JPEG). The photo appears on their card, on the
@@ -222,9 +278,10 @@ to him, too short to matter in a 0.8 s window.
 
 ## URL options
 
-`?song=ID`, `?model=lite|full`, `?cpu=1` (no GPU), `?testcam=URL` (a video
-file as the camera, kept in step with the song), `?testcamAt=SEC` (where it
-sits during setup), `?end=SEC` (stop early), `?noreplay=1`,
+`?song=ID`, `?model=lite|full`, `?cpu=1` (no GPU), `?crops=0|always`,
+`?testcam=URL` (a video file as the camera, kept in step with the song),
+`?testcamAt=SEC` (where it sits during setup), `?testcamLag=SEC` (keep it
+that far behind the song: a slow copier), `?end=SEC` (stop early), `?noreplay=1`,
 `?debug=1` (model and ms per detection in the camera corner; always shown
 during setup).
 
@@ -249,9 +306,17 @@ without a tap. That run and a "controls" run also record a replay and play
 it back. The controls run pauses at 5 s (the song and the grading must
 stand still), resumes, and ends at 9 s (results for what was danced).
 Every podium line must have a photo. The other songs get short smoke runs.
+A "late" run keeps the Cosmo camera 0.8 s behind the song. It must score
+low at the default allowance, higher once the Timing panel widens Behind,
+and lower again when it is narrowed, and the saved values must stick. A
+"group" setup run (`tools/testcam-group.webm`: six Cougarettes from the start
+of Cougarettes in White, enlarged to living-room size) must count at least 4
+in view, follow more with crops than without, and show the "use fewer
+dancers" advice.
 Screenshots: `tools/cache/playing.png`, `results.png`, `replay-cosmo.png`,
 `replay-cosmo-end.png`.
-Typical results: Cosmo camera 78%, mirrored 80%, frozen frame ~7%.
+Typical results: Cosmo camera 75–82%, mirrored 80–84%, frozen frame ~7%;
+late dancer 37% → 74%; group followed 1 → 3 of 6 in view.
 Simulated, per song (original / white / court): copy 98/100/99%, late copy
 through shaky tracking 92/88/91%, standing still 2/0/0%, made-up moves
 12/6/7%, wrong part of the song 6/5/4%.
