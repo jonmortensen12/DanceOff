@@ -97,16 +97,20 @@ export function motion(seq, fps) {
 }
 
 // ---- the reference, prepared once ----
-export function prepareRef(ref) {
+// `song` is the song's entry in songs.json: its beat grid and when scoring
+// starts. Everything time-based about a song hangs off R.
+export function prepareRef(ref, song) {
   const angs = ref.frames.map(f => f ? angles(f, ref.aspect) : null);
   const mirs = ref.frames.map(f => f ? angles(f, ref.aspect, true) : null);
-  return { fps: ref.fps, aspect: ref.aspect, frames: ref.frames, angs, mirs, length: ref.frames.length / ref.fps };
+  return { fps: ref.fps, aspect: ref.aspect, frames: ref.frames, angs, mirs, length: ref.frames.length / ref.fps,
+    beat: 60 / song.bpm, firstBeat: song.firstBeat, gradeBeats: song.gradeBeats || 2, scoreFrom: song.scoreFrom };
 }
 
 // Chance level for a window: how well Cosmo's own moves from OTHER parts of
 // the routine fit it. Some moments are easy (arms down, standing tall:
 // anyone matches those) and some are distinctive. A window pays out only
 // for matching better than chance, so made-up moves score low everywhere.
+export const MAX_CHANCE = 0.88;
 const CHANCE_OFFSETS = [-12, -9, -6, -4, 4, 6, 9, 12];
 export function chance(R, w) {
   const vals = [];
@@ -125,18 +129,14 @@ export function chance(R, w) {
   return vals[Math.floor(vals.length / 2)];   // the median: one lucky look-alike moment should not set it
 }
 
-// The timing grid. Measured from the song (tools/beats.py notes): ~149.75 BPM,
-// first beat 0.128 s into the clip. One grade every two beats.
-export const BEAT = 60 / 149.75;
-export const FIRST_BEAT = 0.128;
-export const GRADE_BEATS = 2;
-export const SCORE_FROM = 3.0;   // clip time; the clip starts at 0:05 of the video, so this is 0:08
-
-export function windows(refLength) {
+// The timing grid: one window every gradeBeats beats, starting at the
+// first boundary at or after scoreFrom (all clip times), up to `end`.
+// Tempo and first beat are measured by tools/beats.py.
+export function windows(R, end = R.length) {
   const out = [];
-  const len = BEAT * GRADE_BEATS;
-  let t = FIRST_BEAT + Math.ceil((SCORE_FROM - FIRST_BEAT) / len - 1e-9) * len;
-  for (; t + len <= refLength + 1e-6; t += len) out.push([t, t + len]);
+  const len = R.beat * R.gradeBeats;
+  let t = R.firstBeat + Math.ceil((R.scoreFrom - R.firstBeat) / len - 1e-9) * len;
+  for (; t + len <= Math.min(end, R.length) + 1e-6; t += len) out.push([t, t + len]);
   return out;
 }
 
@@ -200,6 +200,11 @@ export function gradeWindow(R, w, samples) {
   const f = fit(R, seen);
   if (!f) return { grade: GRADES[3], s: 0 };
   const base = w.chance ?? (w.chance = chance(R, w));
+  // Where moves from anywhere else in the routine fit just as well (Cosmo
+  // crouched or turned, only a limb or two visible), the window cannot tell
+  // good dancing from bad: skip it, like a window where he was not tracked.
+  // Center Court has ~15 of these, the original 4.
+  if (base > MAX_CHANCE) return null;
   let s = Math.max(0, (f.s - base) / Math.max(0.15, 1 - base));
   const i0 = Math.max(0, Math.floor(w[0] * R.fps)), i1 = Math.min(R.angs.length, Math.ceil(w[1] * R.fps) + 1);
   const refMove = motion(R.angs.slice(i0, i1), R.fps);

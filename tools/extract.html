@@ -110,5 +110,33 @@ window.runCrops = async function (jobs, model) {
   }
   return out;
 };
+// Colours only, no model: for people already found (full-frame landmarks),
+// how tan their UPPER arms are, near the elbow. Cosmo's upper arms are fur
+// in every video; a dancer in khaki trousers with bare forearms (Center
+// Court) is tan on the legs and forearms but wears sleeves. jobs:
+// [{i, people: [lm33...]}] -> [[arm or null per person]...]
+window.colours = async function (jobs) {
+  const out = [];
+  for (const job of jobs) {
+    if (!job.people.length) { out.push([]); continue; }
+    const name = 'f' + String(job.i + 1).padStart(4, '0') + '.jpg';
+    const img = await createImageBitmap(await (await fetch('/frames/' + name)).blob());
+    canvas.width = img.width; canvas.height = img.height;
+    ctx.drawImage(img, 0, 0);
+    out.push(job.people.map(lm => {
+      let tan = 0, n = 0;
+      for (const [a, b] of [[11, 13], [12, 14]]) {
+        if (lm[a][2] < 0.3 || lm[b][2] < 0.3) continue;
+        for (const t of [0.55, 0.75]) {
+          const v = tanAt(img, lm[a][0] + t * (lm[b][0] - lm[a][0]), lm[a][1] + t * (lm[b][1] - lm[a][1]));
+          if (v != null) { tan += v; n++; }
+        }
+      }
+      return n ? +(tan / n).toFixed(3) : null;
+    }));
+    img.close();
+  }
+  return out;
+};
 window.ready = true;
 </script>

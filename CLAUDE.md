@@ -21,11 +21,14 @@ from the repo root. Cloudflare refuses any single file over 25 MiB.
 ## Before shipping
 
 ```
-node dancecheck.mjs --quick   # the scoring alone, seconds
-node dancecheck.mjs           # the scoring, then the real page in Chromium with a video as the camera (~3 min)
-node tools/reference.mjs      # re-make web/ref.json after changing the clip (slow: ~15 min)
-node tools/reference.mjs --pick   # re-pick Cosmo from the cached detections (seconds)
+node dancecheck.mjs --quick   # the scoring (every song) and the touchdown start, seconds
+node dancecheck.mjs           # also the real page in Chromium with a video as the camera (~6 min)
+node tools/reference.mjs SONG # re-make web/ref/SONG.json after changing that clip (slow: ~25 min)
+node tools/reference.mjs SONG --pick   # re-pick Cosmo from the cached detections (seconds)
+python3 tools/beats.py web/media/SONG.mp4 --from 2   # tempo and first beat for songs.json
 ```
+
+Songs are listed in `web/songs.json`; HANDOFF.md says how to add one.
 
 `web/score.js` decides every grade and draws nothing. Change a threshold
 there and `dancecheck --quick` says whether copying Cosmo still scores high

@@ -10,18 +10,18 @@ exactly, seen through a real pose model, should score high.
 
     python3 tools/testcam.py          # after tools/reference.mjs
 
-Reads the frames tools/reference.mjs left in tools/cache/frames/ (or
+Reads the frames tools/reference.mjs left in tools/cache/rolex/frames/ (or
 extracts them again). Only the first 24 s of the clip: the check stops at 20.
 """
 import json, os, subprocess, sys
 from PIL import Image, ImageDraw
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-FRAMES = os.path.join(ROOT, 'tools/cache/frames')
+FRAMES = os.path.join(ROOT, 'tools/cache/rolex/frames')
 OUT = os.path.join(ROOT, 'tools/testcam-cosmo.webm')
 SECONDS, SIZE = 24, 480
 
-ref = json.load(open(os.path.join(ROOT, 'web/ref.json')))
+ref = json.load(open(os.path.join(ROOT, 'web/ref/rolex.json')))
 fps = ref['fps']
 n = int(SECONDS * fps)
 if not os.path.isdir(FRAMES) or len(os.listdir(FRAMES)) < n:

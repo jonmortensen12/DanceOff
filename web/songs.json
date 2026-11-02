@@ -1,0 +1,32 @@
+[
+  {
+    "id": "rolex",
+    "title": "The Original",
+    "sub": "2017 vs Boise State",
+    "video": "media/rolex.mp4",
+    "poster": "media/rolex.jpg",
+    "ref": "ref/rolex.json",
+    "source": "0:05-0:58 of the 2017 BYU vs Boise State halftime video",
+    "bpm": 149.75, "firstBeat": 0.128, "gradeBeats": 2, "scoreFrom": 3.0
+  },
+  {
+    "id": "field",
+    "title": "Cougarettes in White",
+    "sub": "On the field",
+    "video": "media/field.mp4",
+    "poster": "media/field.jpg",
+    "ref": "ref/field.json",
+    "source": "0:05-0:51 of Cosmo2.mp4",
+    "bpm": 95.75, "firstBeat": 0.313, "gradeBeats": 2, "scoreFrom": 3.0
+  },
+  {
+    "id": "court",
+    "title": "Center Court",
+    "sub": "Basketball halftime",
+    "video": "media/court.mp4",
+    "poster": "media/court.jpg",
+    "ref": "ref/court.json",
+    "source": "0:00-0:55 of Cosmo3.mp4",
+    "bpm": 149.75, "firstBeat": 0.0, "gradeBeats": 2, "scoreFrom": 2.5
+  }
+]

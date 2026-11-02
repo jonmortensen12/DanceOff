@@ -81,7 +81,13 @@
   #setup .sheet { pointer-events: auto; background: #001730ee; border-radius: 20px; padding: 22px; margin: 0;
     max-width: min(560px, 62%); text-align: left; }
   /* on a phone held upright the camera is in the middle: keep the instructions below it */
-  @media (orientation: portrait) { #setup { align-items: flex-end; } #setup .sheet { max-width: 100%; padding: 16px; } #setup ol { font-size: 14px; } }
+  @media (orientation: portrait) {
+    #setup { align-items: flex-end; } #setup .sheet { max-width: 100%; padding: 14px; } #setup ol { font-size: 13px; line-height: 1.45; }
+    #setup ol li:nth-child(3) { display: none; }
+    /* lining up on a phone: the song is not playing yet, so the camera takes the top */
+    body.lineup #songBox { display: none; }
+    body.lineup #game { grid-template-rows: auto minmax(0, 1fr); grid-template-areas: "cam" "cards"; }
+  }
   #setup ol { margin: 10px 0 0; padding-left: 22px; line-height: 1.6; color: #d6e4f3; }
   #seen { font-size: 22px; font-weight: 900; margin-top: 12px; }
 
@@ -95,17 +101,56 @@
   .podium .counts { font-size: 13px; color: #b8c9dc; margin-top: 2px; }
   .podium .pct { font-size: 34px; font-weight: 900; }
   .podium .line.win { background: linear-gradient(90deg, #c8a27333, #ffffff12); }
+
+  /* song picker (setup) */
+  .songs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin-top: 12px; }
+  .songs button { padding: 0; border-radius: 12px; overflow: hidden; background: #ffffff14; color: var(--white);
+    box-shadow: inset 0 0 0 2px transparent; text-align: left; font-size: 12px; letter-spacing: .02em; text-transform: none; }
+  .songs button img { display: block; width: 100%; aspect-ratio: 16 / 9; object-fit: cover; }
+  .songs button span { display: block; padding: 6px 8px 8px; font-weight: 800; line-height: 1.2; }
+  .songs button span small { display: block; font-weight: 600; opacity: .7; margin-top: 2px; }
+  .songs button[aria-pressed="true"] { box-shadow: inset 0 0 0 3px var(--tan); background: #c8a27333; }
+  .songs button:active { transform: none; }
+
+  /* the touchdown start */
+  #td { display: flex; align-items: center; gap: 12px; margin-top: 14px; padding: 10px 14px; border-radius: 14px; background: #ffffff10; }
+  #td .ref { font-size: 34px; line-height: 1; }
+  #td b { display: block; font-size: 17px; }
+  #td small { color: #b8c9dc; font-size: 13px; }
+  #tdBar { height: 6px; border-radius: 3px; background: #ffffff22; overflow: hidden; margin-top: 6px; }
+  #tdBar i { display: block; height: 100%; width: 0; background: var(--perfect); }
+
+  /* pause / end during the song */
+  #controls { position: absolute; top: 10px; right: 10px; display: flex; gap: 8px; z-index: 3; }
+  #controls[hidden] { display: none; }
+  #controls button { padding: 8px 14px; font-size: 13px; background: #001730cc; color: var(--white); box-shadow: inset 0 0 0 2px #ffffff55; }
+  #controls button:active { transform: translateY(1px); }
+
+  /* photos */
+  .card { grid-template-columns: auto 1fr auto; column-gap: 10px; }
+  .card .face, .podium .face { border-radius: 10px; object-fit: cover; background: #ffffff1a; border: 2px solid var(--c); }
+  .card .face { width: 40px; height: 50px; grid-row: span 2; }
+  .card .bar { grid-column: span 3; }
+  .podium .line { grid-template-columns: 36px auto 1fr auto; }
+  .podium .face { width: 64px; height: 80px; }
+
+  /* the replay */
+  #replayRow { margin-top: 14px; }
+  #replayView { z-index: 8; background: #000d; }
+  #replayView .sheet { max-width: 960px; }
+  #replayVideo { width: 100%; max-height: 70vh; border-radius: 16px; background: #000; display: block; }
 </style>
 </head>
 <body>
 <div id="game">
   <div id="songBox" class="panel">
-    <video id="song" playsinline preload="auto">
-      <source src="media/rolex.mp4" type="video/mp4">
-      <source src="media/rolex.webm" type="video/webm">
-    </video>
+    <video id="song" playsinline preload="auto"></video>
     <div id="banner"></div>
     <div id="progress"></div>
+    <div id="controls" hidden>
+      <button id="pause">Pause</button>
+      <button id="end">End</button>
+    </div>
   </div>
   <div id="camBox" class="panel">
     <video id="cam" playsinline muted></video>
@@ -119,8 +164,8 @@
   <div class="sheet">
     <div class="kicker">Holy War Week · Game Day Party</div>
     <h1 class="display">Cosmo<br>Dance-Off <span class="num">00</span></h1>
-    <p>Dance Cosmo's famous 2017 routine with the Cougarettes. The camera watches up to four dancers
-      and grades every move. Copy him straight on or like a mirror, both count.</p>
+    <p>Dance Cosmo's routines with the Cougarettes. The camera watches up to four dancers
+      and grades every move. Copy him straight on or like a mirror, both count. You get a replay to share.</p>
     <div class="row"><button id="go">Let's dance</button></div>
     <p id="status"></p>
   </div>
@@ -134,7 +179,15 @@
       <li>Up to <b>4 dancers</b>, side by side, not in front of each other. Tape an X for each one.</li>
       <li>Stay on your spot: that's how the camera knows who's who.</li>
     </ol>
-    <div id="seen">Looking for dancers…</div>
+    <div class="songs" id="songs"></div>
+    <div id="td">
+      <div class="ref">🙌</div>
+      <div style="flex:1">
+        <b id="seen">Looking for dancers…</b>
+        <small>Everyone raise both arms, like a touchdown, to start.</small>
+        <div id="tdBar"><i></i></div>
+      </div>
+    </div>
     <div class="row" style="justify-content:flex-start">
       <button id="start">Start the song</button>
       <select id="camPick" hidden></select>
@@ -147,8 +200,20 @@
     <div class="kicker">Final whistle</div>
     <h1 class="display" id="winner">Winner</h1>
     <div class="podium" id="podium"></div>
+    <div class="row" id="replayRow"><button id="watch" class="ghost" disabled>Making your replay…</button></div>
     <div class="row"><button id="again">Dance again</button></div>
     <p id="best"></p>
+  </div>
+</section>
+
+<section id="replayView" class="screen" hidden>
+  <div class="sheet">
+    <video id="replayVideo" controls playsinline></video>
+    <div class="row">
+      <button id="share" hidden>Share</button>
+      <button id="save">Save video</button>
+      <button id="closeReplay" class="ghost">Close</button>
+    </div>
   </div>
 </section>
 
