@@ -70,7 +70,7 @@ export class Recorder {
   pause() { if (this.rec && this.rec.state === 'recording') this.rec.pause(); }
   resume() { if (this.rec && this.rec.state === 'paused') this.rec.resume(); }
 
-  // chips: [{name, color, pct, photo(Image)}] for the score strip
+  // chips: [{name, color, score (text), photo(Image)}] for the score strip
   setChips(chips) { this.chips = chips; }
 
   // Called every animation frame; draws at most ~30 times a second.
@@ -122,12 +122,12 @@ export class Recorder {
         ctx.font = `900 ${Math.round(17 * scale)}px system-ui, sans-serif`; ctx.fillStyle = c.color;
         ctx.fillText(c.name, x + ch + 12 * scale, y + ch / 2, cw - ch - 70 * scale);
         ctx.textAlign = 'right'; ctx.fillStyle = '#fff'; ctx.font = `900 ${Math.round(22 * scale)}px system-ui, sans-serif`;
-        ctx.fillText(c.pct + '%', x + cw - 14 * scale, y + ch / 2);
+        ctx.fillText(c.score, x + cw - 14 * scale, y + ch / 2);
       });
     }
   }
 
-  // The results card for `ms`, then stop. rows: [{name, color, pct, title, photo}]
+  // The results card for `ms`, then stop. rows: [{name, color, score (text), title, photo}]
   async finish(rows, headline, ms = 3500) {
     if (!this.rec || this.rec.state === 'inactive') return null;
     this.resume();
@@ -179,7 +179,7 @@ export class Recorder {
       ctx.fillStyle = '#d6e4f3'; ctx.font = `700 ${Math.round(18 * scale)}px system-ui, sans-serif`;
       ctx.fillText(r.title, tx, y + rh * 0.72);
       ctx.textAlign = 'right'; ctx.fillStyle = '#fff'; ctx.font = `900 ${Math.round(40 * scale)}px system-ui, sans-serif`;
-      ctx.fillText(r.pct + '%', x + rw - 20 * scale, y + rh / 2);
+      ctx.fillText(r.score + ' pts', x + rw - 20 * scale, y + rh / 2);
       ctx.globalAlpha = 1;
     });
   }

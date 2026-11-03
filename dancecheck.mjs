@@ -208,9 +208,10 @@ if (!process.argv.includes('--quick')) {
       faces: [...document.querySelectorAll('#podium img.face')].map(i => i.naturalWidth) }));
     const best = st.players.length ? Math.max(...st.players.map(p => p.pct)) : 0;
     console.log(`  ${label.padEnd(8)} ${st.song}, model ${st.model}/${st.delegate}, ${st.detections} detections (${st.detectMs.toFixed(0)} ms each), ` +
-      `${st.players.length} dancer(s): ${st.players.map(p => `${p.name} ${p.pct}%`).join(', ') || 'none'}`);
+      `${st.players.length} dancer(s): ${st.players.map(p => `${p.name} ${p.pts} pts (${p.pct}%)`).join(', ') || 'none'}`);
     if (process.argv.includes('--verbose')) for (const p of st.players)
       console.log(`     ${p.name}: ` + p.log.map(l => `${l.t}:${l.s}${l.mirror ? 'm' : ''}/${l.n}`).join(' '));
+    check((st.joined || []).every(j => j < 3.5), `${label}: nobody joined after the dancing started (joined at ${(st.joined || []).join(', ')} s)`);
     check(!errors.length && !st.errors.length, `${label}: no page errors ${[...errors, ...st.errors].slice(0, 3).join(' | ')}`);
     if (!replay) check(await page.evaluate(() => getComputedStyle(document.getElementById('replayRow')).display === 'none'),
       `${label}: no replay recorded, so no replay button`);
@@ -285,7 +286,8 @@ if (!process.argv.includes('--quick')) {
   console.log(`  group: followed ${without.most} without crops, ${withCrops.most} with; ${withCrops.inView} counted in view`);
   check(withCrops.inView >= 4, `group: the person detector counts the group (${withCrops.inView} in view)`);
   check(withCrops.most > without.most, `group: crops follow more dancers than the whole-frame look alone (${withCrops.most} vs ${without.most})`);
-  check(/can see \d+ people but can only follow/.test(withCrops.advice), `group: line-up advises fewer dancers ("${withCrops.advice}")`);
+  const plain = await groupLook('');   // as shipped: no crops, head count on
+  check(/can see \d+ people/.test(plain.advice), `group: line-up says how many it sees and to take turns ("${plain.advice}")`);
 
   const mirror = await run('mirror', `song=rolex&${q}${cams.mirror}`);
   const frozen = await run('frozen', `song=rolex&${q}${cams.frozen}`);

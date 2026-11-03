@@ -27,10 +27,11 @@ const TESTCAM = Q.get('testcam');
 const END = Q.has('end') ? +Q.get('end') : null;
 const COLORS = ['--p1', '--p2', '--p3', '--p4', '--p5', '--p6', '--p7', '--p8'].map(v => getComputedStyle(document.documentElement).getPropertyValue(v).trim());
 const GRADE_COLORS = { PERFECT: '--perfect', GOOD: '--good', OK: '--ok', MISS: '--miss' };
-// As many as fit side by side in the shot. Past ~4 the pose model slows and
-// people start hiding each other; the line-up screen measures that and says
-// when to use fewer (see health()).
-const MAX_DANCERS = 8;
+// Four at a time. Room for 8 cost nothing in speed by itself, but the extra
+// crop looks that came with it cut looks a second by 30-40% and found
+// people who were not there, who then joined mid-song (a 7-year-old was
+// tracked badly in a real room). ?dancers=N for testing.
+const MAX_DANCERS = +Q.get('dancers') || 4;
 // seconds between the dancer moving and the frame reaching us, roughly (a
 // video file standing in for the camera has none)
 const CAM_LAG = TESTCAM ? 0 : 0.08;
@@ -111,9 +112,8 @@ async function loadModel() {
     runningMode: 'IMAGE', categoryAllowlist: ['person'], scoreThreshold: 0.35, maxResults: 12,
   });
   const extras = async delegate => {
-    if (!CROPS) return;
-    cropPose = await PoseLandmarker.createFromOptions(vision, cropOpts(delegate));
-    people = await ObjectDetector.createFromOptions(vision, personOpts(delegate));
+    if (CROPS) cropPose = await PoseLandmarker.createFromOptions(vision, cropOpts(delegate));
+    if (COUNT || CROPS) people = await ObjectDetector.createFromOptions(vision, personOpts(delegate));
   };
   if (!Q.has('cpu')) {
     try {
@@ -141,7 +141,11 @@ async function loadModel() {
 // Skipped while tracking runs under 10 looks a second (the whole-frame look
 // comes first). ?crops=0 turns all this off; ?crops=always ignores the speed
 // (for testing on a slow machine).
-const CROPS = Q.get('crops') !== '0';
+// The extra crop looks are OFF (?crops=1 or always to try them): they made
+// tracking slower and invented dancers. The head count stays on (cheap, twice
+// a second) for the advice; ?count=0 turns it off.
+const CROPS = Q.get('crops') === '1' || Q.get('crops') === 'always';
+const COUNT = Q.get('count') !== '0';
 let cropPose = null, people = null, boxes = [], boxesAt = 0, cropTurn = 0;
 const cropCanvas = document.createElement('canvas');
 const cctx = cropCanvas.getContext('2d');
@@ -340,7 +344,8 @@ function setupAdvice() {
   const tips = [];
   if (n >= 2 && overlapping(latest)) tips.push('Some dancers are in front of each other: spread out side by side.');
   const gap = followingGap();
-  if (gap) tips.push(`I can see ${gap.inView} people but can only follow ${gap.followed}. Try ${gap.followed > 1 ? gap.followed : 'fewer'} dancers, more light, or more space between you.`);
+  if (gap && gap.inView > MAX_DANCERS) tips.push(`I can see ${gap.inView} people: ${MAX_DANCERS} dance at a time. Take turns!`);
+  else if (gap) tips.push(`I can see ${gap.inView} people but can only follow ${gap.followed}. Try ${gap.followed > 1 ? gap.followed : 'fewer'} dancers, more light, or more space between you.`);
   if (n >= 2 && cam.videoWidth && cam.videoWidth < cam.videoHeight * 1.2) tips.push('Turn the phone sideways: it fits more dancers and finds them better.');
   if (n >= 2 && detTimes.length > 10 && rate < SLOW_RATE)
     tips.push(`Tracking is slow with ${n} dancers (${rate.toFixed(0)} looks a second). ${n > 2 ? `Try ${Math.max(2, n - 2)}–${n - 1}` : 'Fewer dancers'} for fairer scores.`);
@@ -351,7 +356,7 @@ function resultsAdvice() {
   const tips = [];
   if (health.minRate < SLOW_RATE) tips.push(`Tracking was slow this round (as low as ${health.minRate.toFixed(0)} looks a second with ${players.length} dancer${players.length === 1 ? '' : 's'}).`);
   if (players.length > 1 && seen < 0.75) tips.push(`The camera lost dancers ${Math.round(100 * (1 - seen))}% of the time.`);
-  if (health.gapTicks > 0.5 * health.ticks && health.maxInView > players.length)
+  if (health.gapTicks > 0.5 * health.ticks && health.maxInView > players.length && players.length < MAX_DANCERS)
     tips.push(`It could see ${health.maxInView} people but followed only ${players.length}.`);
   if (tips.length) tips.push(players.length > 2 ? 'Fewer dancers, or more space between them, will score more fairly.' : 'More light and space will help.');
   return tips.join(' ');
@@ -362,7 +367,7 @@ function newPlayer(i, d) {
   const names = loadNames();
   const p = { i, name: names[i] || 'P' + (i + 1), color: COLORS[i], c: d ? d.c : [0.5, 0.5], s: d ? d.s : 0.2,
     pose: d ? d.pose : null, sig: d ? d.sig : null, lastSeen: performance.now(), samples: [], grades: [], last: null, lastAt: 0,
-    combo: 0, bestCombo: 0, present: 0, log: [], all: [], firstPct: null, photo: null, img: null, counts: { PERFECT: 0, GOOD: 0, OK: 0, MISS: 0 } };
+    combo: 0, bestCombo: 0, present: 0, log: [], all: [], firstPts: null, joined: state.phase === 'playing' ? +songTime().toFixed(2) : 0, photo: null, img: null, counts: { PERFECT: 0, GOOD: 0, OK: 0, MISS: 0 } };
   if (d) takePhoto(p, d.pose);
   return p;
 }
@@ -430,6 +435,10 @@ function assign() {
       return;
     }
     if (players.length >= MAX_DANCERS) return;
+    // The line-up is fixed once the dancing starts: someone walking through,
+    // or a passing false detection, does not become a player. Latecomers
+    // during the countdown still join.
+    if (songTime() >= R.scoreFrom) return;
     // not a ghost double of someone already playing
     if (players.some(p => Math.hypot(d.c[0] - p.c[0], d.c[1] - p.c[1]) < p.s * 1.2)) return;
     players.push(newPlayer(players.length, d));
@@ -440,7 +449,7 @@ function assign() {
   publishPlayers(players);
 }
 function publishPlayers(list) {
-  state.players = list.map(p => ({ name: p.name, pct: S.percent(p.grades), counts: p.counts, graded: p.grades.length,
+  state.players = list.map(p => ({ name: p.name, joined: p.joined, pts: S.points(p.grades), pct: S.percent(p.grades), counts: p.counts, graded: p.grades.length,
     bestCombo: p.bestCombo, log: p.log, photo: !!p.photo }));
 }
 
@@ -477,7 +486,7 @@ function gradeWindow(w, p, from = p.samples) {
   p.log.push({ t: +w[0].toFixed(2), s: +res.s.toFixed(2), lag: res.lag, mirror: res.mirror, edge: res.edge, n: inW.length });
   const g = res.grade;
   p.grades.push(g); p.counts[g.name]++;
-  p.combo = g.pts >= 2 ? p.combo + 1 : 0; p.bestCombo = Math.max(p.bestCombo, p.combo);
+  p.combo = g.name === 'PERFECT' || g.name === 'GOOD' ? p.combo + 1 : 0; p.bestCombo = Math.max(p.bestCombo, p.combo);
   return g;
 }
 
@@ -560,7 +569,7 @@ function buildCards() {
   $('cards').innerHTML = players.map(p => `
     <div class="card" id="card${p.i}" style="--c:${p.color}">
       ${p.photo ? `<img class="face" src="${p.photo}" alt="">` : '<div class="face"></div>'}
-      <div class="who">${escapeHtml(p.name)}</div><div class="pct">0%</div>
+      <div class="who">${escapeHtml(p.name)}</div><div class="pct">0</div>
       <div class="last"></div>
       <div class="bar"><i></i></div>
     </div>`).join('');
@@ -576,7 +585,7 @@ function updateCards() {
   const now = performance.now();
   for (const p of players) {
     const el = $('card' + p.i); if (!el) continue;
-    el.querySelector('.pct').textContent = S.percent(p.grades) + '%';
+    el.querySelector('.pct').textContent = S.fmt(S.points(p.grades));
     const last = el.querySelector('.last');
     if (p.last) {
       last.textContent = p.last.name + (p.combo >= 3 ? ` ×${p.combo}` : '');
@@ -585,7 +594,7 @@ function updateCards() {
     el.querySelector('.bar i').style.width = (100 * p.grades.length / Math.max(1, WINDOWS.length)) + '%';
     el.classList.toggle('gone', now - p.lastSeen > 1500);
   }
-  if (recorder) recorder.setChips(players.filter(p => p.present || p.pose).map(p => ({ name: p.name, color: p.color, pct: S.percent(p.grades), photo: p.img })));
+  if (recorder) recorder.setChips(players.filter(p => p.present || p.pose).map(p => ({ name: p.name, color: p.color, score: S.fmt(S.points(p.grades)), photo: p.img })));
 }
 function escapeHtml(s) { return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
 
@@ -731,7 +740,8 @@ async function finish() {
   $('controls').hidden = true;
   try { wakeLock && wakeLock.release(); } catch (e) {}
   banner('');
-  players.forEach(p => { p.firstPct = S.percent(p.grades); });
+  players.forEach(p => { p.firstPts = S.points(p.grades); });
+  state.joined = players.map(p => p.joined);   // everyone, podium or not
   $('resultsAdvice').textContent = resultsAdvice();
   state.resultsAdvice = $('resultsAdvice').textContent;
   setupTuning();
@@ -740,7 +750,7 @@ async function finish() {
     const rec = recorder; recorder = null;
     $('watch').disabled = true; $('watch').textContent = 'Making your replay…'; $('replayRow').hidden = false;
     try {
-      const rows = ranked.map(({ p, pct }) => ({ name: p.name, color: p.color, pct, title: S.title(pct), photo: p.img }));
+      const rows = ranked.map(({ p, pct, pts }) => ({ name: p.name, color: p.color, score: S.fmt(pts), title: S.title(pct), photo: p.img }));
       replay = await rec.finish(rows, $('winner').textContent);
       if (replay && replay.blob.size) {
         replayUrl = URL.createObjectURL(replay.blob);
@@ -754,29 +764,30 @@ let replayUrl = null;
 
 function showResults(first = false) {
   // someone the camera only glimpsed (a passer-by, a false detection) is not on the podium
-  const ranked = players.filter(p => p.present >= Math.max(1, 0.25 * p.grades.length))
-    .map(p => ({ p, pct: S.percent(p.grades) }))
-    .sort((a, b) => b.pct - a.pct || b.p.counts.PERFECT - a.p.counts.PERFECT);
-  const tie = ranked.length > 1 && ranked[0].pct === ranked[1].pct && ranked[0].p.counts.PERFECT === ranked[1].p.counts.PERFECT;
+  // Someone the camera saw for under half the song (a passer-by, a false
+  // detection, a kid who wandered off) is not on the podium.
+  const ranked = players.filter(p => p.present >= Math.max(1, 0.5 * p.grades.length))
+    .map(p => ({ p, pts: S.points(p.grades), pct: S.percent(p.grades) }))
+    .sort((a, b) => b.pts - a.pts || b.p.counts.PERFECT - a.p.counts.PERFECT);
+  const tie = ranked.length > 1 && ranked[0].pts === ranked[1].pts && ranked[0].p.counts.PERFECT === ranked[1].p.counts.PERFECT;
   publishPlayers(ranked.map(r => r.p));
-  state.players.forEach((x, i) => { x.pct = ranked[i].pct; });
-  $('winner').textContent = !ranked.length ? 'Nobody danced!' : ranked.length === 1 ? `${ranked[0].pct}%`
+  $('winner').textContent = !ranked.length ? 'Nobody danced!' : ranked.length === 1 ? `${S.fmt(ranked[0].pts)} pts`
     : tie ? "It's a tie!" : `${ranked[0].p.name} wins!`;
-  $('podium').innerHTML = ranked.map(({ p, pct }, i) => `
+  $('podium').innerHTML = ranked.map(({ p, pct, pts }, i) => `
     <div class="line ${i === 0 && ranked.length > 1 && !tie ? 'win' : ''}" style="--c:${p.color}">
       <div class="rank">${i + 1}</div>
       ${p.photo ? `<img class="face" src="${p.photo}" alt="">` : '<div class="face"></div>'}
       <div><div class="name">${escapeHtml(p.name)}</div><div class="ttl">${S.title(pct)}</div>
         <div class="counts">${p.counts.PERFECT} perfect · ${p.counts.GOOD} good · ${p.counts.OK} ok · ${p.counts.MISS} miss · best streak ${p.bestCombo}</div></div>
-      <div class="pct">${pct}%${p.firstPct != null && p.firstPct !== pct ? `<small>${pct > p.firstPct ? '▲' : '▼'} was ${p.firstPct}%</small>` : ''}</div>
+      <div class="pct">${S.fmt(pts)}<small>pts</small>${p.firstPts != null && p.firstPts !== pts ? `<small>${pts > p.firstPts ? '▲' : '▼'} was ${S.fmt(p.firstPts)}</small>` : ''}</div>
     </div>`).join('') || '<p>The camera could not see anyone. Step back so it sees you head to toe.</p>';
   let best = 0;
-  const key = 'danceoff.best.' + SONG.id;
+  const key = 'danceoff.bestpts.' + SONG.id;
   try { best = +localStorage.getItem(key) || 0; } catch (e) {}
-  const top = ranked.length ? ranked[0].pct : 0;
+  const top = ranked.length ? ranked[0].pts : 0;
   if (!first) { $('results').hidden = false; return ranked; }   // re-graded with the sliders: not a new record
-  if (top > best) { best = top; try { localStorage.setItem(key, String(best)); } catch (e) {} $('best').textContent = `New best on this device for ${SONG.title}: ${best}%!`; }
-  else $('best').textContent = `Best on this device for ${SONG.title}: ${best}%`;
+  if (top > best) { best = top; try { localStorage.setItem(key, String(best)); } catch (e) {} $('best').textContent = `New best on this device for ${SONG.title}: ${S.fmt(best)} pts!`; }
+  else $('best').textContent = `Best on this device for ${SONG.title}: ${S.fmt(best)} pts`;
   $('results').hidden = false;
   return ranked;
 }

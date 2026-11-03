@@ -3,7 +3,7 @@
 A dance game for the BYU–Utah game-day party (Saturday 2026-11-07, 10 a.m.
 kickoff). The routines are Cosmo the Cougar's dances with the Cougarettes,
 three to choose from (`web/songs.json`). The first is the viral 2017 one (BYU
-vs Boise State, Ayo & Teo's "Rolex"). It plays on a laptop or a phone. The device's camera watches as many dancers as fit side by side (up to 8), and
+vs Boise State, Ayo & Teo's "Rolex"). It plays on a laptop or a phone. The device's camera watches up to four dancers, and
 every two beats each one gets PERFECT / GOOD / OK / MISS for how closely
 they matched Cosmo. Idea #12 in Night-Watch's `GAMEDAY.md`. It was planned
 for a `cougar-cam` repo but lives here.
@@ -89,7 +89,12 @@ track by eye (below), then `node dancecheck.mjs`.
    alone gives a still dancer ~20% of the dance's movement, which is why the
    cut reaches zero above 0.
 7. **Grades on that 0..1 scale:** PERFECT ≥ 0.70, GOOD ≥ 0.45, OK ≥ 0.25,
-   else MISS. Points 3/2/1/0, and the final % is points over the maximum.
+   else MISS. **The score is points**: 100 / 60 / 25 / 0 a move, added up
+   (`points`). That was asked for on 2026-11-03, replacing a percentage, so
+   time on the floor counts: someone hidden for half the song earns half.
+   The percentage (`percent`) is still computed, for the titles and the
+   checks. "Best on this device" is kept per song in points
+   (`danceoff.bestpts.SONG`).
 
 ### Tuning the timing allowance after a song
 
@@ -148,41 +153,43 @@ Legend, ≥40 Tailgate Shuffler, ≥25 Walk-On, below that Ute in Disguise.
 
 ## How many dancers (`game.js`, "Groups")
 
-Up to 8 (`MAX_DANCERS`), as many as fit side by side. The limit in practice
-is MediaPipe's pose model, which is built for one person. It finds people by
-their faces and mostly keeps to whoever it is already following. On a frame
-of six Cougarettes in a line it found **one**. Three things help:
+**Four** (`MAX_DANCERS`; `?dancers=N` to test others).
 
-- **A person detector** (MediaPipe's ObjectDetector with EfficientDet-Lite0,
-  `web/models/person.tflite`, 7 MB) counts everyone in view about twice a
-  second (`state.inView`). It found 5–6 of the same six.
-- **Crop looks.** Each frame, besides the whole-frame pose look, ONE extra
-  pose look goes to a person the detector sees but no pose covers, on a crop
-  round just them (a second PoseLandmarker in IMAGE mode). They take turns,
-  so it costs about twice the work whatever the crowd. On the group test: 3
-  followed instead of 1. They are skipped while tracking runs under 10 looks
-  a second, so the whole-frame look comes first. `?crops=0` turns them off,
-  and `?crops=always` ignores the speed (the test machine's CPU needs that).
-  An earlier version looked at three fixed slices of the frame instead. It
-  found fewer, because the pose model still had to find faces in each slice.
-- **Advice, measured, not guessed.** During line-up (`setupAdvice`) and on
-  the results (`resultsAdvice`), the game says what is going wrong:
-  - "I can see 6 people but can only follow 3. Try 3 dancers, more light, or
-    more space between you." This fires when, over the last 3 s, the head
-    count was above the number followed most of the time.
-  - Tracking is slow (under 8 looks a second).
-  - Dancers are in front of each other.
-  - A portrait phone ("turn the phone sideways").
-  - The camera lost dancers more than a quarter of the time.
+**Hard-won (2026-11-02 to 11-03):** it was raised to 8 for one day, with
+extra "crop looks": a person detector found people the pose model missed,
+and each frame one extra pose look went to a crop around one of them. In
+the first real-room game after that, a 7-year-old was tracked badly and a
+player joined part-way through for a few seconds. Measured afterwards:
+the cap of 8 by itself cost nothing, but the crop looks cut looks a second by
+30-40% (14.5 to 10.4 with one dancer, 5.0 to 3.0 with six on the test
+machine). With only Cosmo in view they also found a second "person" who was
+not there. So the cap is back at 4 and crop looks are off (`?crops=1` or
+`always` to try them). They did follow more of a six-person group (3
+instead of 1), at that cost.
 
-Not measured here: real people in a living room. The test footage (enlarged
-360p stadium video, small faces behind hair) is much harder than a webcam a
-few metres away, so a real room should do better than the group test's 3 of
-6. Try it, and trust the advice line.
+What stays:
+
+- **The head count.** MediaPipe's ObjectDetector (EfficientDet-Lite0,
+  `web/models/person.tflite`) counts people in view twice a second
+  (`state.inView`; `?count=0` turns it off). The pose model is built for one
+  person: on six Cougarettes in a line it found one, while the detector
+  found 5-6.
+- **Advice from it** (`setupAdvice`, `resultsAdvice`):
+  - More people in view than 4: "I can see 6 people: 4 dance at a time.
+    Take turns!"
+  - More in view than followed: "I can see 3 people but can only follow 2.
+    Try 2 dancers, more light, or more space between you."
+  - Also: tracking slow (under 8 looks a second), dancers in front of each
+    other, a portrait phone, dancers lost often.
+- **The line-up locks when the dancing starts** (`assign`): after
+  `scoreFrom`, an unclaimed detection never becomes a new player. Someone
+  joining during the countdown still does. Lost players are still recovered.
+- **The podium needs half the song**: a player seen in under half of the
+  graded windows is left off.
 
 ## Photos and who is who (`game.js` `assign`)
 
-When the song starts, whoever is in view becomes P1..P8, numbered left to
+When the song starts, whoever is in view becomes P1..P4, numbered left to
 right as the dancers see themselves in the mirrored camera view, and each
 gets a head-and-shoulders **photo** (`takePhoto`: from the full camera
 frame, mirrored, 160×200 JPEG). The photo appears on their card, on the
@@ -278,7 +285,7 @@ to him, too short to matter in a 0.8 s window.
 
 ## URL options
 
-`?song=ID`, `?model=lite|full`, `?cpu=1` (no GPU), `?crops=0|always`,
+`?song=ID`, `?model=lite|full`, `?cpu=1` (no GPU), `?dancers=N`, `?crops=1|always`, `?count=0`,
 `?testcam=URL` (a video file as the camera, kept in step with the song),
 `?testcamAt=SEC` (where it sits during setup), `?testcamLag=SEC` (keep it
 that far behind the song: a slow copier), `?end=SEC` (stop early), `?noreplay=1`,
@@ -311,8 +318,9 @@ low at the default allowance, higher once the Timing panel widens Behind,
 and lower again when it is narrowed, and the saved values must stick. A
 "group" setup run (`tools/testcam-group.webm`: six Cougarettes from the start
 of Cougarettes in White, enlarged to living-room size) must count at least 4
-in view, follow more with crops than without, and show the "use fewer
-dancers" advice.
+in view, follow more with crops than without (they still work when asked
+for), and as shipped say how many it sees and to take turns. Every run checks
+that nobody joined after the dancing started.
 Screenshots: `tools/cache/playing.png`, `results.png`, `replay-cosmo.png`,
 `replay-cosmo-end.png`.
 Typical results: Cosmo camera 75–82%, mirrored 80–84%, frozen frame ~7%;

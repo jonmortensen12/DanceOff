@@ -184,9 +184,9 @@ export const GRADES = [
   // on the 0..1 above-chance scale (see gradeWindow). Tuned with
   // dancecheck: a copy with heavy tracking noise has a median of ~0.7,
   // dancing the wrong part of the song a median of ~0.
-  { name: 'PERFECT', min: 0.7, pts: 3 },
-  { name: 'GOOD', min: 0.45, pts: 2 },
-  { name: 'OK', min: 0.25, pts: 1 },
+  { name: 'PERFECT', min: 0.7, pts: 100 },
+  { name: 'GOOD', min: 0.45, pts: 60 },
+  { name: 'OK', min: 0.25, pts: 25 },
   { name: 'MISS', min: -1, pts: 0 },
 ];
 
@@ -242,8 +242,12 @@ export function refCovers(R, w) {
 // Overall: points earned over points possible, as a percentage.
 export function percent(grades) {
   if (!grades.length) return 0;
-  return Math.round(100 * grades.reduce((a, g) => a + g.pts, 0) / (3 * grades.length));
+  return Math.round(100 * points(grades) / (100 * grades.length));
 }
+// The score: points for every move graded. A dancer who was there for the
+// whole song can earn more than one who joined late or was often hidden.
+export function points(grades) { return grades.reduce((a, g) => a + g.pts, 0); }
+export const fmt = n => n.toLocaleString('en-US');
 
 export function title(pct) {
   if (pct >= 85) return 'Cosmo Certified';
